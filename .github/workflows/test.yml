@@ -1,0 +1,13 @@
+name: test
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x install.sh tests/run.sh
+      - name: tests
+        run: tests/run.sh
+      - name: dry run on a stock runner
+        run: ./install.sh --dry-run --skip mcp-lazy
