@@ -4,14 +4,14 @@
 #   ./install.sh                     apply every component
 #   ./install.sh --dry-run           print what would change, change nothing
 #   ./install.sh --only zswap,thp    apply only these components
-#   ./install.sh --skip chrome       apply all but these
+#   ./install.sh --skip kwin         apply all but these
 #   ./install.sh --list              list components
 #
 # Run as your normal user: system parts use sudo, user parts (KDE, Chrome, MCP) need your $HOME.
 # Every component is idempotent; every file it rewrites is backed up once as <file>.bak-lowram.
 set -euo pipefail
 
-COMPONENTS=(zswap thp mglru earlyoom baloo kwin thorium chrome jetbrains mcp-lazy)
+COMPONENTS=(zswap thp mglru earlyoom baloo kwin thorium jetbrains mcp-lazy)
 ROOT_COMPONENTS=(zswap thp mglru earlyoom)
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 declare -A DESCRIPTION=(
@@ -21,8 +21,7 @@ declare -A DESCRIPTION=(
   [earlyoom]="earlyoom with prefer (browsers, JVM, compilers) / avoid (desktop, audio) rules"
   [baloo]="KDE: disable the Baloo file indexer"
   [kwin]="KDE: disable heavy KWin effects"
-  [thorium]="Thorium browser as the default: installed, custom (non-system) window frame + Thorium 2024 UI"
-  [chrome]="Chrome/Chromium launcher with a renderer-process cap (skipped when Thorium is set up)"
+  [thorium]="Thorium as the default browser (custom window frame, Thorium 2024 UI) + a renderer-capped Thorium Lite launcher"
   [jetbrains]="IntelliJ IDEA / RustRover: trim plugins; add Lite profiles (no AI completion, Grazie, MCP; 1 GB heap)"
   [mcp-lazy]="AI agents: build mcp-lazy and wrap user-scope stdio MCP servers in ~/.claude.json"
 )
@@ -30,13 +29,15 @@ declare -A DESCRIPTION=(
 ZSWAP_POOL_PERCENT=${ZSWAP_POOL_PERCENT:-25}
 SWAPPINESS=${SWAPPINESS:-100}
 MGLRU_MIN_TTL_MS=${MGLRU_MIN_TTL_MS:-1000}
-CHROME_RENDERER_LIMIT=${CHROME_RENDERER_LIMIT:-6}
+THORIUM_RENDERER_LIMIT=${THORIUM_RENDERER_LIMIT:-6}
 MCP_LAZY_FLAGS=${MCP_LAZY_FLAGS:---gate --per-cwd}
 MCP_LAZY_REPO=${MCP_LAZY_REPO:-https://github.com/Migiht/mcp-lazy}
-EARLYOOM_ARGS_DEFAULT="-m 5 -s 10 -r 3600 --prefer '(^|/)(firefox|chrome|chromium|electron|java|node|cc1plus|rustc|ld)\$' --avoid '(^|/)(init|systemd|systemd-.*|kwin_wayland|plasmashell|Xwayland|sddm|sddm-helper|pipewire|wireplumber|sshd|dbus-.*)\$'"
+EARLYOOM_ARGS_DEFAULT="-m 5 -s 10 -r 3600 --prefer '(^|/)(firefox|thorium|chrome|chromium|electron|java|node|cc1plus|rustc|ld)\$' --avoid '(^|/)(init|systemd|systemd-.*|kwin_wayland|plasmashell|Xwayland|sddm|sddm-helper|pipewire|wireplumber|sshd|dbus-.*)\$'"
 EARLYOOM_ARGS=${EARLYOOM_ARGS:-$EARLYOOM_ARGS_DEFAULT}
 KWIN_EFFECTS=(blur fadingpopups frozenapp fullscreen maximize scale screenedge slide slidingnotifications slidingpopups squash windowaperture)
 THORIUM_DEFAULT_BROWSER=${THORIUM_DEFAULT_BROWSER:-1}   # 0: install and tune Thorium, keep the current default browser
+THORIUM_LITE=${THORIUM_LITE:-1}                         # 0: no Thorium Lite launcher
+THORIUM_DESKTOP_SRC=${THORIUM_DESKTOP_SRC:-/usr/share/applications/thorium-browser.desktop}
 JETBRAINS_TRIM_MAIN=${JETBRAINS_TRIM_MAIN:-1}   # 0: leave the normal IDE profiles alone, only add Lite ones
 JETBRAINS_ROOTS=${JETBRAINS_ROOTS:-}            # extra colon-separated directories to look for IDE installs in
 
@@ -379,9 +380,41 @@ thorium_default_browser() {
   CHANGED=1; ((DRY)) || ok "default browser: $id (was ${current:-unset})"
 }
 
+# Thorium Lite: a second launcher next to the normal one. Same profile, but tabs share renderer
+# processes instead of one each and every renderer's JS heap is capped. The flags only apply when
+# Thorium isn't already running (otherwise the window opens in the running browser).
+thorium_lite() {
+  local real; real=$(command -v thorium-browser)
+  local wrapper="$HOME/.local/bin/thorium-lite"
+  write_file user "$wrapper" "#!/bin/sh
+# Thorium Lite: tabs share up to $THORIUM_RENDERER_LIMIT renderer processes; each renderer's JS heap is capped.
+# Flags only take effect when Thorium is not already running.
+exec $real \\
+  --renderer-process-limit=$THORIUM_RENDERER_LIMIT \\
+  --js-flags=\"--max-old-space-size=256\" \\
+  --disable-smooth-scrolling \\
+  \"\$@\""
+  run user chmod +x "$wrapper"
+
+  if [[ -f $THORIUM_DESKTOP_SRC ]]; then
+    # A copy of Thorium's entry: every Exec launches the wrapper, only the entry's own name says Lite.
+    local entry
+    entry=$(W="$wrapper" awk '
+      /^\[/ { main = ($0 == "[Desktop Entry]") }
+      /^Exec=/ { sub(/^Exec=[^ ]+/, "Exec=" ENVIRON["W"]) }
+      main && /^Name=/ { $0 = $0 " (Lite)" }
+      { print }' "$THORIUM_DESKTOP_SRC")
+    write_file user "$HOME/.local/share/applications/thorium-lite.desktop" "$entry"
+  else
+    warn "no $THORIUM_DESKTOP_SRC — start $wrapper directly"
+  fi
+}
+
 c_thorium() {
   thorium_install || return 0
   ((DRY)) && ! have thorium-browser && { same "(dry run: the rest needs Thorium installed)"; return 0; }
+  ((THORIUM_LITE)) && thorium_lite
+
   local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/thorium"
   if pgrep -u "$(id -u)" -x thorium >/dev/null 2>&1 || pgrep -u "$(id -u)" -f '/thorium-browser/thorium( |$)' >/dev/null 2>&1; then
     warn "Thorium is running — close it and re-run to apply the window-frame/UI settings (it rewrites them on exit)"
@@ -400,50 +433,6 @@ c_thorium() {
   fi
 }
 
-c_chrome() {
-  if [[ " ${SELECTED[*]} " == *" thorium "* ]] && have thorium-browser; then
-    same "Thorium is the browser here — Chrome launcher skipped"; return 0
-  fi
-  local bin="" id=""
-  for bin in google-chrome-stable chromium thorium-browser brave-browser; do
-    if have "$bin"; then id=$bin; break; fi
-  done
-  [[ -n $id ]] || { same "no Chrome/Chromium found — skipped"; return 0; }
-  local existing
-  existing=$(grep -l -- '--renderer-process-limit' "$HOME"/.local/bin/*-lite 2>/dev/null | head -1 || true)
-  if [[ -n $existing && $existing != "$HOME/.local/bin/$id-lite" ]]; then
-    same "a renderer-capped launcher already exists ($existing) — skipped"; return 0
-  fi
-  local real; real=$(command -v "$id")
-  local wrapper="$HOME/.local/bin/$id-lite"
-  write_file user "$wrapper" "#!/bin/sh
-# $id with a renderer-process cap: tabs share renderer processes instead of one each.
-# Flags only take effect when the browser is not already running.
-exec $real \\
-  --renderer-process-limit=$CHROME_RENDERER_LIMIT \\
-  --js-flags=\"--max-old-space-size=256\" \\
-  --disable-smooth-scrolling \\
-  \"\$@\""
-  run user chmod +x "$wrapper"
-
-  # A desktop entry next to the system one, launching the wrapper.
-  local src=""
-  for src in /usr/share/applications/{google-chrome,chromium,org.chromium.Chromium,thorium-browser,brave-browser}.desktop; do
-    [[ -f $src ]] && grep -q "$(basename "$real")\|$id" "$src" && break; src=""
-  done
-  if [[ -n $src ]]; then
-    local entry
-    # Every Exec launches the wrapper; only the entry's own name gets the "(Lite)" suffix.
-    entry=$(W="$wrapper" awk '
-      /^\[/ { main = ($0 == "[Desktop Entry]") }
-      /^Exec=/ { sub(/^Exec=[^ ]+/, "Exec=" ENVIRON["W"]) }
-      main && /^Name=/ { $0 = $0 " (Lite)" }
-      { print }' "$src")
-    write_file user "$HOME/.local/share/applications/$id-lite.desktop" "$entry"
-  else
-    warn "no system desktop file for $id found; start $wrapper directly"
-  fi
-}
 
 # ───────────── JetBrains IDEs ─────────────
 

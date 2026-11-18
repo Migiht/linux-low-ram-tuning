@@ -31,7 +31,7 @@ and prints what it changed.
 | Lazy + gated MCP servers ([mcp-lazy](https://github.com/Migiht/mcp-lazy)) | ~125 MB → ~7 MB per idle AI-agent session per server; 135 tool names → 1 line of model context |
 | Killing idle agent sessions, unused DB services | ~0.8–0.9 GB each round; 750 MB ClickHouse + 2 GB Postgres that ran for nothing |
 | Baloo off, KWin effects off | no background indexer churn; fewer compositor wake-ups |
-| Thorium (CPU-tuned Chromium) as the default browser | no Google background services; browser-drawn window frame, Thorium 2024 UI |
+| Thorium (CPU-tuned Chromium) as the default browser, plus a Thorium Lite launcher | no Google background services; Lite caps renderer processes for tab-heavy sessions; browser-drawn window frame, Thorium 2024 UI |
 | IntelliJ IDEA / RustRover: trimmed plugins + "Lite" profiles | 78 / 51 unused bundled plugins off; Lite: no AI completion, Grazie, MCP or embedded Chromium (~0.5 GB, 9 processes), 1 GB heap instead of 2–3 GB, periodic GC, capped malloc arenas |
 | earlyoom with prefer/avoid rules | the browser or a build dies before the desktop does |
 
@@ -108,7 +108,7 @@ Kills at 5 % free RAM + 10 % free swap, preferring browsers/Electron/JVM/compile
 compositor, the shell, audio or systemd:
 
 ```
--m 5 -s 10 -r 3600 --prefer '(^|/)(firefox|chrome|chromium|electron|java|node|cc1plus|rustc|ld)$'
+-m 5 -s 10 -r 3600 --prefer '(^|/)(firefox|thorium|chrome|chromium|electron|java|node|cc1plus|rustc|ld)$'
 --avoid '(^|/)(init|systemd|systemd-.*|kwin_wayland|plasmashell|Xwayland|sddm|sddm-helper|pipewire|wireplumber|sshd|dbus-.*)$'
 ```
 
@@ -246,7 +246,7 @@ installer skips those for running IDEs.
 maximize/fullscreen animations. Fewer compositor frames, less GPU/CPU wake-up. (Separately, check
 `AnimationDurationFactor` in `~/.config/kdeglobals`: `0` = instant, `1` = default, higher = *slower*.)
 
-**11. Thorium as the browser** (`thorium`, `chrome`)
+**11. Thorium as the browser, plus Thorium Lite** (`thorium`)
 
 [Thorium](https://github.com/Alex313031/thorium) is a Chromium build compiled for the CPU's instruction
 set (AVX2/AVX/SSE3) — same engine and extensions as Chrome, without Google's background services. The
@@ -255,17 +255,20 @@ installer gets it from the AUR (`thorium-browser-bin`, via paru/yay) on Arch, or
 (`xdg-settings`, `xdg-mime` for http/https/html, and Plasma's own `BrowserApplication`;
 `THORIUM_DEFAULT_BROWSER=0` keeps your current default).
 
-Thorium runs with its own defaults — no extra command-line flags. (On Arch, `~/.config/thorium-flags.conf`
-is where you would put some, e.g. `--renderer-process-limit=6` if many tabs still eat too much.)
+The normal Thorium runs with its own defaults — no extra command-line flags — and stays the default
+browser. Next to it the installer adds **Thorium Lite**: a `thorium-lite` launcher and a "Thorium
+Browser (Lite)" menu entry that start the same profile with `--renderer-process-limit=6
+--js-flags=--max-old-space-size=256 --disable-smooth-scrolling`. Tabs then share six renderer processes
+instead of one each, and a runaway page's JS heap is capped — use it for tab-heavy sessions. The flags
+only apply if Thorium isn't already running (otherwise the window opens in the running browser).
+`THORIUM_LITE=0` skips it; `THORIUM_RENDERER_LIMIT` changes the cap.
 
 UI: the browser draws its own title bar and window buttons instead of the window manager's
 (`browser.custom_chrome_frame`), with the classic theme rather than GTK/Qt and the **Thorium 2024** UI
 (`chrome://flags/#thorium-2024`). The installer sets these in every profile — or seeds them before the
 first start — while Thorium is closed (it rewrites its files on exit).
 
-If Thorium isn't wanted, the `chrome` component does the renderer cap for Chrome/Chromium instead: a
-`google-chrome-stable-lite` wrapper and a "(Lite)" menu entry. With Thorium set up it skips itself.
-Either way, also turn on *Settings → Performance → Memory Saver*.
+Also turn on *Settings → Performance → Memory Saver*.
 
 **12. A scheduler for responsiveness under load** (manual)
 
@@ -312,8 +315,7 @@ power on a laptop. Worth it plugged in, if the laptop isn't already thermally th
 | `earlyoom` | package, `/etc/default/earlyoom` | yes | service enabled |
 | `baloo` | `balooctl6 disable`, masks `kde-baloo.service` (user) | yes | yes |
 | `kwin` | `~/.config/kwinrc` `[Plugins]` | after `qdbus6 org.kde.KWin /KWin reconfigure` | yes |
-| `thorium` | AUR / GitHub release package; `Preferences` + `Local State` of every profile; default browser via `xdg-settings`/`xdg-mime`/`kdeglobals` | new Thorium launches; settings after it's closed | yes |
-| `chrome` | `~/.local/bin/google-chrome-lite`, `~/.local/share/applications/google-chrome-lite.desktop` | new Chrome launches | yes |
+| `thorium` | AUR / GitHub release package; `~/.local/bin/thorium-lite` + `thorium-lite.desktop`; `Preferences` + `Local State` of every profile; default browser via `xdg-settings`/`xdg-mime`/`kdeglobals` | new Thorium launches; settings after it's closed | yes |
 | `jetbrains` | `disabled_plugins.txt`, `options/filetypes.xml` and `options/project.default.xml` of the newest IDEA/RustRover profile; a `<profile>-lite` copy; `~/.config/JetBrains/lite/*-lite.{properties,vmoptions}`; `~/.local/bin/*-lite`; `jetbrains-*-lite.desktop` | next IDE start | yes |
 | `mcp-lazy` | `cargo install`, wraps user-scope stdio servers in `~/.claude.json` (backup kept) | new agent sessions | yes |
 
@@ -332,7 +334,7 @@ build parallelism, scheduler and EPP choices.
 - zram: rename `/etc/systemd/zram-generator.conf.disabled` back;
 - Baloo: `systemctl --user unmask kde-baloo.service && balooctl6 enable`;
 - KWin: re-enable effects in System Settings → Window Management → Desktop Effects;
-- Thorium: restore `Preferences.bak-lowram` / `Local State.bak-lowram`; pick another default browser in System Settings;
+- Thorium: delete `~/.local/bin/thorium-lite` and `~/.local/share/applications/thorium-lite.desktop`; restore `Preferences.bak-lowram` / `Local State.bak-lowram`; pick another default browser in System Settings;
 - MCP: restore `~/.claude.json.bak-lowram`;
 - JetBrains: restore `disabled_plugins.txt.bak-lowram` in the profile (or re-enable plugins in Settings → Plugins); delete the `*-lite` profile directories, launchers and desktop entries.
 

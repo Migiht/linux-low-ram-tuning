@@ -76,14 +76,6 @@ HOME="$tmp" PATH="$tmp/bin:$PATH" ./install.sh --dry-run --only mcp-lazy >/dev/n
 check "--dry-run leaves ~/.claude.json untouched" "$before" "$(cat "$tmp/.claude.json")"
 check "--dry-run makes no backup" "no" "$([[ -e $tmp/.claude.json.bak-lowram ]] && echo yes || echo no)"
 
-echo "chrome wrapper"
-mkdir -p "$tmp/fakebin"
-printf '#!/bin/sh\necho "args: $*"\n' >"$tmp/fakebin/google-chrome-stable"; chmod +x "$tmp/fakebin/google-chrome-stable"
-HOME="$tmp" PATH="$tmp/fakebin:/usr/bin:/bin" ./install.sh --only chrome >/dev/null 2>&1
-check "wrapper passes the renderer cap and user args" \
-  "args: --renderer-process-limit=6 --js-flags=--max-old-space-size=256 --disable-smooth-scrolling https://x" \
-  "$("$tmp/.local/bin/google-chrome-stable-lite" https://x)"
-
 echo "jetbrains: vmoptions"
 cat >"$tmp/base.vmoptions" <<'EOF'
 # defaults
@@ -212,23 +204,46 @@ check "first run is seeded before Thorium ever started" "true" "$(pj "$fresh/Def
 echo "thorium: default browser"
 tb="$tmp/thbin"; mkdir -p "$tb" "$tmp/thhome"
 # shellcheck disable=SC2016  # the stub scripts expand these, not this one
-printf '#!/bin/sh\nname=thorium\nflags_file="$HOME/.config/${name}-flags.conf"\n' >"$tb/thorium-browser"
+printf '#!/bin/sh\nname=thorium\nflags_file="$HOME/.config/${name}-flags.conf"\necho "args: $*"\n' >"$tb/thorium-browser"
 for stub in xdg-settings xdg-mime kwriteconfig6; do
   # shellcheck disable=SC2016
   printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n[ "$1" = get ] && echo old-browser.desktop\nexit 0\n' "$stub" "$tmp" >"$tb/$stub"
 done
 chmod +x "$tb"/*
+cat >"$tmp/thorium.desktop" <<'EOF2'
+[Desktop Entry]
+Name=Thorium Browser
+Exec=/usr/bin/thorium-browser %U
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/bin/thorium-browser --new-window %U
+EOF2
+export THORIUM_DESKTOP_SRC="$tmp/thorium.desktop"
 HOME="$tmp/thhome" XDG_CONFIG_HOME="$tmp/thhome/.config" PATH="$tb:$PATH" ./install.sh --only thorium >"$tmp/th.out" 2>&1
 check "starts Thorium without extra flags" "no" "$([[ -e $tmp/thhome/.config/thorium-flags.conf ]] && echo yes || echo no)"
+check "Thorium Lite passes the renderer cap and user args" \
+  "args: --renderer-process-limit=6 --js-flags=--max-old-space-size=256 --disable-smooth-scrolling https://x" \
+  "$("$tmp/thhome/.local/bin/thorium-lite" https://x)"
+lite_entry="$tmp/thhome/.local/share/applications/thorium-lite.desktop"
+check "Thorium Lite menu entry: only its own name says Lite" "Name=Thorium Browser (Lite)|Name=New Window" \
+  "$(grep '^Name=' "$lite_entry" | paste -sd'|')"
+check "every action of the Lite entry launches the wrapper" "2" "$(grep -c "^Exec=$tmp/thhome/.local/bin/thorium-lite" "$lite_entry")"
+check "the default browser stays the normal Thorium" "no" "$(grep -q 'thorium-lite' "$tmp/calls" && echo yes || echo no)"
 check "sets the default web browser" "yes" "$(grep -q 'xdg-settings set default-web-browser thorium-browser.desktop' "$tmp/calls" && echo yes)"
 check "registers http/https handlers" "2" "$(grep -cE 'xdg-mime default thorium-browser.desktop x-scheme-handler/https?$' "$tmp/calls")"
 check "sets Plasma's browser too" "yes" "$(grep -q 'kwriteconfig6 --file kdeglobals --group General --key BrowserApplication thorium-browser.desktop' "$tmp/calls" && echo yes)"
 rm -f "$tmp/calls"
 HOME="$tmp/thhome" XDG_CONFIG_HOME="$tmp/thhome/.config" PATH="$tb:$PATH" THORIUM_DEFAULT_BROWSER=0 ./install.sh --only thorium >/dev/null 2>&1
 check "THORIUM_DEFAULT_BROWSER=0 leaves the default alone" "no" "$(grep -q default-web-browser "$tmp/calls" 2>/dev/null && echo yes || echo no)"
+rm -rf "$tmp/thhome/.local"
+HOME="$tmp/thhome" XDG_CONFIG_HOME="$tmp/thhome/.config" PATH="$tb:$PATH" THORIUM_LITE=0 ./install.sh --only thorium >/dev/null 2>&1
+check "THORIUM_LITE=0 makes no Lite launcher" "no" "$([[ -e $tmp/thhome/.local/bin/thorium-lite ]] && echo yes || echo no)"
+unset THORIUM_DESKTOP_SRC
 
 echo "cli"
-check "--list names every component" "10" "$(./install.sh --list | wc -l | tr -d ' ')"
+check "--list names every component" "9" "$(./install.sh --list | wc -l | tr -d ' ')"
 check "unknown component is rejected" "1" "$(./install.sh --only nope >/dev/null 2>&1; echo $?)"
 check "unknown option is rejected" "1" "$(./install.sh --frobnicate >/dev/null 2>&1; echo $?)"
 
