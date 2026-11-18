@@ -42,7 +42,6 @@ JETBRAINS_TRIM_MAIN=${JETBRAINS_TRIM_MAIN:-1}   # 0: leave the normal IDE profil
 JETBRAINS_ROOTS=${JETBRAINS_ROOTS:-}            # extra colon-separated directories to look for IDE installs in
 
 DRY=0
-SELECTED=()
 PENDING_CMDLINE=()   # kernel parameters collected by components, applied once at the end
 CHANGED=0
 
@@ -763,7 +762,6 @@ main() {
   done
   [[ -n $only ]] && for c in ${only//,/ }; do [[ -n ${DESCRIPTION[$c]:-} ]] || die "unknown component: $c"; done
   ((${#selected[@]})) || die "nothing selected"
-  SELECTED=("${selected[@]}")
 
   ((DRY)) && printf '%sDry run — nothing will be changed.%s\n' "$B" "$N"
   local needs_root=0
