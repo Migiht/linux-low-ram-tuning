@@ -31,7 +31,7 @@ and prints what it changed.
 | Lazy + gated MCP servers ([mcp-lazy](https://github.com/Migiht/mcp-lazy)) | ~125 MB → ~7 MB per idle AI-agent session per server; 135 tool names → 1 line of model context |
 | Killing idle agent sessions, unused DB services | ~0.8–0.9 GB each round; 750 MB ClickHouse + 2 GB Postgres that ran for nothing |
 | Baloo off, KWin effects off | no background indexer churn; fewer compositor wake-ups |
-| Thorium (CPU-tuned Chromium) as the default browser, with a renderer limit | caps the process explosion of many tabs; browser-drawn window frame, Thorium 2024 UI |
+| Thorium (CPU-tuned Chromium) as the default browser | no Google background services; browser-drawn window frame, Thorium 2024 UI |
 | IntelliJ IDEA / RustRover: trimmed plugins + "Lite" profiles | 78 / 51 unused bundled plugins off; Lite: no AI completion, Grazie, MCP or embedded Chromium (~0.5 GB, 9 processes), 1 GB heap instead of 2–3 GB, periodic GC, capped malloc arenas |
 | earlyoom with prefer/avoid rules | the browser or a build dies before the desktop does |
 
@@ -226,7 +226,7 @@ installer skips those for running IDEs.
 maximize/fullscreen animations. Fewer compositor frames, less GPU/CPU wake-up. (Separately, check
 `AnimationDurationFactor` in `~/.config/kdeglobals`: `0` = instant, `1` = default, higher = *slower*.)
 
-**11. Thorium as the browser, with a renderer-process cap** (`thorium`, `chrome`)
+**11. Thorium as the browser** (`thorium`, `chrome`)
 
 [Thorium](https://github.com/Alex313031/thorium) is a Chromium build compiled for the CPU's instruction
 set (AVX2/AVX/SSE3) — same engine and extensions as Chrome, without Google's background services. The
@@ -235,10 +235,8 @@ installer gets it from the AUR (`thorium-browser-bin`, via paru/yay) on Arch, or
 (`xdg-settings`, `xdg-mime` for http/https/html, and Plasma's own `BrowserApplication`;
 `THORIUM_DEFAULT_BROWSER=0` keeps your current default).
 
-Every Thorium start gets `--renderer-process-limit=6 --js-flags=--max-old-space-size=256
---disable-smooth-scrolling`: tabs share renderer processes instead of one each, and a runaway page's JS
-heap is capped. On Arch the launcher reads `~/.config/thorium-flags.conf`; elsewhere a user-level copy
-of `thorium-browser.desktop` carries the flags.
+Thorium runs with its own defaults — no extra command-line flags. (On Arch, `~/.config/thorium-flags.conf`
+is where you would put some, e.g. `--renderer-process-limit=6` if many tabs still eat too much.)
 
 UI: the browser draws its own title bar and window buttons instead of the window manager's
 (`browser.custom_chrome_frame`), with the classic theme rather than GTK/Qt and the **Thorium 2024** UI
@@ -294,7 +292,7 @@ power on a laptop. Worth it plugged in, if the laptop isn't already thermally th
 | `earlyoom` | package, `/etc/default/earlyoom` | yes | service enabled |
 | `baloo` | `balooctl6 disable`, masks `kde-baloo.service` (user) | yes | yes |
 | `kwin` | `~/.config/kwinrc` `[Plugins]` | after `qdbus6 org.kde.KWin /KWin reconfigure` | yes |
-| `thorium` | AUR / GitHub release package; `~/.config/thorium-flags.conf` (or a user `thorium-browser.desktop`); `Preferences` + `Local State` of every profile; default browser via `xdg-settings`/`xdg-mime`/`kdeglobals` | new Thorium launches; settings after it's closed | yes |
+| `thorium` | AUR / GitHub release package; `Preferences` + `Local State` of every profile; default browser via `xdg-settings`/`xdg-mime`/`kdeglobals` | new Thorium launches; settings after it's closed | yes |
 | `chrome` | `~/.local/bin/google-chrome-lite`, `~/.local/share/applications/google-chrome-lite.desktop` | new Chrome launches | yes |
 | `jetbrains` | `disabled_plugins.txt` and `options/filetypes.xml` of the newest IDEA/RustRover profile; a `<profile>-lite` copy; `~/.config/JetBrains/lite/*-lite.{properties,vmoptions}`; `~/.local/bin/*-lite`; `jetbrains-*-lite.desktop` | next IDE start | yes |
 | `mcp-lazy` | `cargo install`, wraps user-scope stdio servers in `~/.claude.json` (backup kept) | new agent sessions | yes |
@@ -314,7 +312,7 @@ build parallelism, scheduler and EPP choices.
 - zram: rename `/etc/systemd/zram-generator.conf.disabled` back;
 - Baloo: `systemctl --user unmask kde-baloo.service && balooctl6 enable`;
 - KWin: re-enable effects in System Settings → Window Management → Desktop Effects;
-- Thorium: delete `~/.config/thorium-flags.conf`; restore `Preferences.bak-lowram` / `Local State.bak-lowram`; pick another default browser in System Settings;
+- Thorium: restore `Preferences.bak-lowram` / `Local State.bak-lowram`; pick another default browser in System Settings;
 - MCP: restore `~/.claude.json.bak-lowram`;
 - JetBrains: restore `disabled_plugins.txt.bak-lowram` in the profile (or re-enable plugins in Settings → Plugins); delete the `*-lite` profile directories, launchers and desktop entries.
 

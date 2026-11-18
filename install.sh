@@ -21,7 +21,7 @@ declare -A DESCRIPTION=(
   [earlyoom]="earlyoom with prefer (browsers, JVM, compilers) / avoid (desktop, audio) rules"
   [baloo]="KDE: disable the Baloo file indexer"
   [kwin]="KDE: disable heavy KWin effects"
-  [thorium]="Thorium browser as the default: installed, renderer cap, custom (non-system) window frame + Thorium 2024 UI"
+  [thorium]="Thorium browser as the default: installed, custom (non-system) window frame + Thorium 2024 UI"
   [chrome]="Chrome/Chromium launcher with a renderer-process cap (skipped when Thorium is set up)"
   [jetbrains]="IntelliJ IDEA / RustRover: trim plugins; add Lite profiles (no AI completion, Grazie, MCP; 1 GB heap)"
   [mcp-lazy]="AI agents: build mcp-lazy and wrap user-scope stdio MCP servers in ~/.claude.json"
@@ -286,12 +286,6 @@ c_kwin() {
   else same "KWin effects already off"; fi
 }
 
-# Flags every Chromium-based browser here starts with: tabs share renderer processes instead of one
-# each, and each renderer's JS heap is capped.
-browser_flags() {
-  printf '%s\n' "--renderer-process-limit=$CHROME_RENDERER_LIMIT" "--js-flags=--max-old-space-size=256" "--disable-smooth-scrolling"
-}
-
 # Thorium's settings: the browser draws its own title bar (not the window manager's), classic theme
 # (not GTK/Qt), and the "Thorium 2024" UI flag. Applied to every existing profile, or seeded for the
 # first run. The browser must be closed — it rewrites these files on exit.
@@ -388,26 +382,6 @@ thorium_default_browser() {
 c_thorium() {
   thorium_install || return 0
   ((DRY)) && ! have thorium-browser && { same "(dry run: the rest needs Thorium installed)"; return 0; }
-  local bin; bin=$(command -v thorium-browser)
-
-  # Flags: the Arch package's launcher reads ~/.config/thorium-flags.conf; elsewhere a user-level copy
-  # of the desktop entry carries them (same file name, so it replaces the system one in menus and as
-  # the default-browser handler).
-  if grep -qs 'flags.conf' "$bin"; then
-    local name; name=$(sed -n 's/^name=//p' "$bin"); name=${name:-thorium}
-    write_file user "${XDG_CONFIG_HOME:-$HOME/.config}/$name-flags.conf" "# Renderer cap for low-RAM machines (written by linux-low-ram-tuning)
-$(browser_flags)"
-  else
-    local src=/usr/share/applications/thorium-browser.desktop
-    if [[ -f $src ]]; then
-      local flags; flags=$(browser_flags | tr '\n' ' ')
-      write_file user "$HOME/.local/share/applications/thorium-browser.desktop" \
-        "$(F="$flags" awk '/^Exec=/ { sub(/^Exec=[^ ]+/, "& " ENVIRON["F"]); sub(/  +/, " ") } { print }' "$src")"
-    else
-      warn "no thorium-browser.desktop found; start Thorium with: $(browser_flags | tr '\n' ' ')"
-    fi
-  fi
-
   local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/thorium"
   if pgrep -u "$(id -u)" -x thorium >/dev/null 2>&1 || pgrep -u "$(id -u)" -f '/thorium-browser/thorium( |$)' >/dev/null 2>&1; then
     warn "Thorium is running — close it and re-run to apply the window-frame/UI settings (it rewrites them on exit)"

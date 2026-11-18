@@ -172,7 +172,7 @@ check "second run changes nothing" "$before" "$(cat "$th/Default/Preferences" "$
 fresh="$tmp/thorium-fresh"; thorium_prefs "$fresh" >/dev/null
 check "first run is seeded before Thorium ever started" "true" "$(pj "$fresh/Default/Preferences" 'd["browser"]["custom_chrome_frame"]')"
 
-echo "thorium: flags and default browser"
+echo "thorium: default browser"
 tb="$tmp/thbin"; mkdir -p "$tb" "$tmp/thhome"
 # shellcheck disable=SC2016  # the stub scripts expand these, not this one
 printf '#!/bin/sh\nname=thorium\nflags_file="$HOME/.config/${name}-flags.conf"\n' >"$tb/thorium-browser"
@@ -182,7 +182,7 @@ for stub in xdg-settings xdg-mime kwriteconfig6; do
 done
 chmod +x "$tb"/*
 HOME="$tmp/thhome" XDG_CONFIG_HOME="$tmp/thhome/.config" PATH="$tb:$PATH" ./install.sh --only thorium >"$tmp/th.out" 2>&1
-check "flags go to the launcher's flags file" "--renderer-process-limit=6" "$(grep -- '--renderer' "$tmp/thhome/.config/thorium-flags.conf")"
+check "starts Thorium without extra flags" "no" "$([[ -e $tmp/thhome/.config/thorium-flags.conf ]] && echo yes || echo no)"
 check "sets the default web browser" "yes" "$(grep -q 'xdg-settings set default-web-browser thorium-browser.desktop' "$tmp/calls" && echo yes)"
 check "registers http/https handlers" "2" "$(grep -cE 'xdg-mime default thorium-browser.desktop x-scheme-handler/https?$' "$tmp/calls")"
 check "sets Plasma's browser too" "yes" "$(grep -q 'kwriteconfig6 --file kdeglobals --group General --key BrowserApplication thorium-browser.desktop' "$tmp/calls" && echo yes)"
