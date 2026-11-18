@@ -1,0 +1,9 @@
+# Additionally disabled in every Lite profile: local neural full-line completion (runs its own process), ML ranking in completion and Search Everywhere, Grazie grammar checks, the MCP server, debugger MCP and the Agent Client Protocol.
+# One plugin ID per line; lines starting with # are ignored. Unknown IDs are harmless.
+com.intellij.completion.ml.ranking
+com.intellij.mcpServer
+com.intellij.platform.acp
+com.intellij.searcheverywhere.ml
+intellij.debuggerMcp
+org.jetbrains.completion.full.line
+tanvd.grazi

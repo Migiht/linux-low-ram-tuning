@@ -32,6 +32,7 @@ and prints what it changed.
 | Killing idle agent sessions, unused DB services | ~0.8–0.9 GB each round; 750 MB ClickHouse + 2 GB Postgres that ran for nothing |
 | Baloo off, KWin effects off | no background indexer churn; fewer compositor wake-ups |
 | Chrome with a renderer limit | caps the process explosion of many tabs |
+| IntelliJ IDEA / RustRover: trimmed plugins + "Lite" profiles | 78 / 51 unused bundled plugins off; Lite: no AI completion, Grazie, MCP or embedded Chromium (~0.5 GB, 9 processes), 1.5 GB heap instead of 2–3 GB |
 | earlyoom with prefer/avoid rules | the browser or a build dies before the desktop does |
 
 ---
@@ -135,29 +136,75 @@ One `cc1plus` on a big C++ file took 1.45 GB here. `make -j12` on 16 GB is an OO
 use `-j4`…`-j6`. Same for Gradle/Kotlin daemons: `org.gradle.jvmargs=-Xmx2g`,
 `kotlin.daemon.jvmargs=-Xmx1g`, and `./gradlew --stop` when done.
 
+**8. JetBrains IDEs: fewer plugins, and a "Lite" profile** (`jetbrains`)
+
+IntelliJ IDEA Ultimate ships with 162 bundled plugins enabled, RustRover with 113; a Java/Maven or
+Rust project needs a fraction. Measured on RustRover: the IDE process ~2.5 GB RSS, plus the embedded
+Chromium (JCEF) — 9 more processes, ~0.5 GB.
+
+What *doesn't* help much on 2026.x: classic vmoptions "tuning". Most guides
+([FoxxMD/intellij-jvm-options-explained](https://github.com/FoxxMD/intellij-jvm-options-explained),
+[jordanmews/intellij_performance_settings](https://github.com/jordanmews/intellij_performance_settings),
+[lixiaoliyubo/jetbrains-vmoptions-config](https://github.com/lixiaoliyubo/jetbrains-vmoptions-config))
+date from 2016–2020, and some of their advice works *against* RAM: `-Xms` = `-Xmx` pins the whole heap,
+`-XX:+UseG1GC` is already the default. JBR 25 already enables compact object headers and returns free
+heap to the OS (`JbrShrinkingGcMaxHeapFreeRatio=40`). Swapping in another JVM (OpenJ9, a jlink'd JRE)
+isn't an option either: the IDE relies on JetBrains Runtime APIs (windowing, fonts, Wayland, JCEF), and
+jlink only shrinks disk size.
+
+What does help:
+
+- **Disable unused bundled plugins** — `disabled_plugins.txt` in the IDE's config directory, edited
+  while the IDE is closed. The lists in [`jetbrains/`](jetbrains/) drop Spring, Jakarta EE, Quarkus,
+  Micronaut, Ktor, Kubernetes, the JS/CSS/web stack, Qodana, Trainer, CJK language packs, foreign
+  keymaps (and in RustRover Qt/QML, extra colour schemes and Database). They keep Kotlin, Gradle,
+  Maven, Docker, Git/GitHub/GitLab, Deployment, Dev Containers and Remote Development. **Read the list
+  before installing** — it's tuned for Java/Kotlin and Rust work.
+- **A "Lite" profile per IDE** — a launcher that points the IDE at its own config/system/plugins
+  directories (`IDEA_PROPERTIES` / `RUSTROVER_PROPERTIES`) and its own vmoptions
+  (`*_VM_OPTIONS`). The profile starts as a copy of your settings (licence included) and then lives on
+  its own; it has its own indexes, so the first project open re-indexes. On top of the plugin list it
+  disables local full-line AI completion (a separate process of a few hundred MB), ML ranking in
+  completion and Search Everywhere, Grazie, the MCP server, debugger MCP and the Agent Client Protocol,
+  and doesn't download shared indexes. Its vmoptions are the IDE's own with
+  [these overrides](jetbrains/lite.vmoptions-overrides): `-Xmx1536m`, a 256 MB code cache,
+  `-Dide.browser.jcef.enabled=false`, `-XX:+UseStringDeduplication`, `-XX:TieredStopAtLevel=1`,
+  `-XX:SoftRefLRUPolicyMSPerMB=50`, no AI promotion.
+  Trade-offs: C1-only JIT makes indexing and inspections slower (the first flag to drop if it feels
+  sluggish); without JCEF the Markdown preview loses features and browser-based tool windows are blank;
+  watch the memory indicator and go back to `-Xmx2048m` if it sits above ~85 %.
+- **Habits:** one IDE open at a time (two JetBrains IDEs are 2–3 GB of heap each plus as much again
+  off-heap); exclude `target/`, asset and generated-doc directories from indexing; turn off inline AI
+  completion and AI Assistant in the normal profile if you don't use them; File → Power Save Mode when
+  you only read code.
+
+`JETBRAINS_TRIM_MAIN=0 ./install.sh --only jetbrains` adds the Lite profiles without touching the normal
+ones. Close the IDEs first — they rewrite `disabled_plugins.txt` on exit; the installer skips plugin
+lists of running IDEs.
+
 ### B — small but real
 
-**8. KDE: Baloo off** (`baloo`) — the file indexer re-crawls home directories full of `node_modules`,
+**9. KDE: Baloo off** (`baloo`) — the file indexer re-crawls home directories full of `node_modules`,
 `target/` and build trees. `balooctl6 disable` + mask the user unit.
 
-**9. KDE: heavy KWin effects off** (`kwin`) — blur, fades, slides, scale, squash, window aperture,
+**10. KDE: heavy KWin effects off** (`kwin`) — blur, fades, slides, scale, squash, window aperture,
 maximize/fullscreen animations. Fewer compositor frames, less GPU/CPU wake-up. (Separately, check
 `AnimationDurationFactor` in `~/.config/kdeglobals`: `0` = instant, `1` = default, higher = *slower*.)
 
-**10. Chrome with a renderer-process cap** (`chrome`)
+**11. Chrome with a renderer-process cap** (`chrome`)
 
 A wrapper (`google-chrome-lite`) and a desktop entry that start Chrome with
 `--renderer-process-limit=6 --js-flags=--max-old-space-size=256 --disable-smooth-scrolling`. Tabs
 share renderers instead of one process each. The flags only apply when Chrome isn't already running.
 Also turn on *Settings → Performance → Memory Saver*.
 
-**11. A scheduler for responsiveness under load** (manual)
+**12. A scheduler for responsiveness under load** (manual)
 
 `sched_ext` ships in the stock Arch kernel: `scx_bpfland` (desktop) or `scx_lavd` (games) from
 `scx-scheds` keep the UI smooth while a build pins every core. It doesn't add throughput, and it's
 reversible with one command.
 
-**12. EPP `performance` on AC** (manual)
+**13. EPP `performance` on AC** (manual)
 
 `intel_pstate` EPP `balance_performance` → `performance` measured about +4 % performance for +22 %
 power on a laptop. Worth it plugged in, if the laptop isn't already thermally throttling (check with
@@ -197,6 +244,7 @@ power on a laptop. Worth it plugged in, if the laptop isn't already thermally th
 | `baloo` | `balooctl6 disable`, masks `kde-baloo.service` (user) | yes | yes |
 | `kwin` | `~/.config/kwinrc` `[Plugins]` | after `qdbus6 org.kde.KWin /KWin reconfigure` | yes |
 | `chrome` | `~/.local/bin/google-chrome-lite`, `~/.local/share/applications/google-chrome-lite.desktop` | new Chrome launches | yes |
+| `jetbrains` | `disabled_plugins.txt` of the newest IDEA/RustRover profile; a `<profile>-lite` copy; `~/.config/JetBrains/lite/*-lite.{properties,vmoptions}`; `~/.local/bin/*-lite`; `jetbrains-*-lite.desktop` | next IDE start | yes |
 | `mcp-lazy` | `cargo install`, wraps user-scope stdio servers in `~/.claude.json` (backup kept) | new agent sessions | yes |
 
 Kernel command line: the script edits `/etc/kernel/cmdline` (UKI; regenerates with `mkinitcpio -P`),
@@ -214,7 +262,8 @@ build parallelism, scheduler and EPP choices.
 - zram: rename `/etc/systemd/zram-generator.conf.disabled` back;
 - Baloo: `systemctl --user unmask kde-baloo.service && balooctl6 enable`;
 - KWin: re-enable effects in System Settings → Window Management → Desktop Effects;
-- MCP: restore `~/.claude.json.bak-lowram`.
+- MCP: restore `~/.claude.json.bak-lowram`;
+- JetBrains: restore `disabled_plugins.txt.bak-lowram` in the profile (or re-enable plugins in Settings → Plugins); delete the `*-lite` profile directories, launchers and desktop entries.
 
 ## Verify after reboot
 
@@ -234,6 +283,8 @@ systemctl is-active earlyoom                                              # acti
 - Kernel docs, [Transparent Hugepage Support](https://www.kernel.org/doc/html/latest/admin-guide/mm/transhuge.html)
 - CachyOS wiki, [sched-ext](https://wiki.cachyos.org/configuration/sched-ext/)
 - Phoronix, [EPP tuning on Meteor Lake](https://www.phoronix.com/review/intel-meteorlake-epp)
+- JetBrains JVM options: [FoxxMD/intellij-jvm-options-explained](https://github.com/FoxxMD/intellij-jvm-options-explained), [jordanmews/intellij_performance_settings](https://github.com/jordanmews/intellij_performance_settings), [lixiaoliyubo/jetbrains-vmoptions-config](https://github.com/lixiaoliyubo/jetbrains-vmoptions-config) (mostly pre-2021 — read with the caveats above)
+- JetBrains, [Advanced configuration: JVM options, platform properties, config directories](https://www.jetbrains.com/help/idea/tuning-the-ide.html)
 - Phoronix, [CachyOS x86-64-v3/v4 repositories](https://www.phoronix.com/review/cachyos-x86-64-v3-v4)
 
 ## License

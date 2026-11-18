@@ -1,0 +1,21 @@
+# Applied on top of the IDE's own bin/<ide>64.vmoptions to build a Lite profile's vmoptions.
+# "-Xkey" / "-XX:Key=" / "-Dkey=" lines replace the same option; "!<prefix>" removes lines starting with <prefix>.
+#
+# Heap: 1.5 GB. Watch the memory indicator (Appearance → Show memory indicator); if it sits above
+# ~85 % or the IDE warns about low memory, go back to -Xmx2048m (most likely on large Kotlin projects).
+-Xms128m
+-Xmx1536m
+# Half the JIT code cache, and soft references (caches) are let go sooner.
+-XX:ReservedCodeCacheSize=256m
+-XX:SoftRefLRUPolicyMSPerMB=50
+# No embedded Chromium (JCEF): ~9 processes / ~0.5 GB. Markdown preview loses some features and
+# browser-based tool windows go blank.
+-Dide.browser.jcef.enabled=false
+# Identical strings stored once in the heap; a little CPU for a few % of heap.
+-XX:+UseStringDeduplication
+# C1-only JIT: less memory for compiled code, but indexing and inspections get slower. First thing to
+# remove if the IDE feels sluggish.
+-XX:TieredStopAtLevel=1
+# No AI promotion pop-ups, no AI licence flag.
+-Dllm.show.ai.promotion.window.on.start=false
+!-Denable.non.commercial.ai.license

@@ -84,8 +84,57 @@ check "wrapper passes the renderer cap and user args" \
   "args: --renderer-process-limit=6 --js-flags=--max-old-space-size=256 --disable-smooth-scrolling https://x" \
   "$("$tmp/.local/bin/google-chrome-stable-lite" https://x)"
 
+echo "jetbrains: vmoptions"
+cat >"$tmp/base.vmoptions" <<'EOF'
+# defaults
+-Xms128m
+-Xmx3072m
+-XX:ReservedCodeCacheSize=512m
+-XX:+UseCompactObjectHeaders
+-Dllm.show.ai.promotion.window.on.start=true
+-Denable.non.commercial.ai.license=true
+-ea
+EOF
+printf '%s\n' '# o' '-Xmx2048m' '-XX:ReservedCodeCacheSize=256m' '-XX:-UseCompactObjectHeaders' \
+  '-Dllm.show.ai.promotion.window.on.start=false' '!-Denable.non.commercial' '-XX:SoftRefLRUPolicyMSPerMB=50' >"$tmp/over"
+check "overrides replace in place, drop, flip flags and append" \
+  "$(printf '%s\n' -Xms128m -Xmx2048m -XX:ReservedCodeCacheSize=256m -XX:-UseCompactObjectHeaders \
+     -Dllm.show.ai.promotion.window.on.start=false -ea -XX:SoftRefLRUPolicyMSPerMB=50)" \
+  "$(build_vmoptions "$tmp/base.vmoptions" "$tmp/over")"
+
+echo "jetbrains: profiles"
+jb="$tmp/jb"; ide="$jb/opt/rustrover"
+mkdir -p "$ide/bin" "$jb/.config/JetBrains/RustRover2026.2"
+printf '#!/bin/sh\necho "props=$RUSTROVER_PROPERTIES vm=$RUSTROVER_VM_OPTIONS args=$*"\n' >"$ide/bin/rustrover"; chmod +x "$ide/bin/rustrover"
+cp "$tmp/base.vmoptions" "$ide/bin/rustrover64.vmoptions"
+echo '{ "name": "RustRover", "version": "2026.2" }' >"$ide/product-info.json"
+printf 'already.off\n' >"$jb/.config/JetBrains/RustRover2026.2/disabled_plugins.txt"
+echo "license" >"$jb/.config/JetBrains/RustRover2026.2/rustrover.key"
+HOME="$jb" JETBRAINS_ROOTS="$ide" ./install.sh --only jetbrains >"$tmp/jb.out" 2>&1
+main="$jb/.config/JetBrains/RustRover2026.2" lite="$jb/.config/JetBrains/RustRover2026.2-lite"
+check "keeps plugins the user already disabled" "yes" "$(grep -qx already.off "$main/disabled_plugins.txt" && echo yes)"
+check "trims the main profile" "yes" "$(grep -qx com.intellij.lang.qml "$main/disabled_plugins.txt" && echo yes)"
+check "main profile keeps AI completion" "no" "$(grep -qx org.jetbrains.completion.full.line "$main/disabled_plugins.txt" && echo yes || echo no)"
+check "Lite profile is a copy (license included)" "license" "$(cat "$lite/rustrover.key" 2>/dev/null)"
+check "Lite disables AI completion, Grazie and MCP" "3" \
+  "$(grep -cxE 'org.jetbrains.completion.full.line|tanvd.grazi|com.intellij.mcpServer' "$lite/disabled_plugins.txt")"
+check "Lite vmoptions built from the IDE's own" "-Xmx1536m" "$(grep -- -Xmx "$jb/.config/JetBrains/lite/rustrover-lite.vmoptions")"
+check "launcher points the IDE at the Lite profile" \
+  "props=$jb/.config/JetBrains/lite/rustrover-lite.properties vm=$jb/.config/JetBrains/lite/rustrover-lite.vmoptions args=proj" \
+  "$("$jb/.local/bin/rustrover-lite" proj)"
+check "desktop entry named after the product" "Name=RustRover Lite" \
+  "$(grep '^Name=' "$jb/.local/share/applications/jetbrains-rustrover-lite.desktop")"
+before=$(cat "$main/disabled_plugins.txt" "$lite/disabled_plugins.txt")
+HOME="$jb" JETBRAINS_ROOTS="$ide" ./install.sh --only jetbrains >"$tmp/jb2.out" 2>&1
+check "second run changes nothing" "$before" "$(cat "$main/disabled_plugins.txt" "$lite/disabled_plugins.txt")"
+check "second run says so" "yes" "$(grep -q 'already in place' "$tmp/jb2.out" && echo yes || cat "$tmp/jb2.out")"
+rm -rf "$lite"
+printf 'x\n' >"$main/disabled_plugins.txt"
+HOME="$jb" JETBRAINS_ROOTS="$ide" JETBRAINS_TRIM_MAIN=0 ./install.sh --only jetbrains >/dev/null 2>&1
+check "JETBRAINS_TRIM_MAIN=0 leaves the main profile alone" "x" "$(cat "$main/disabled_plugins.txt")"
+
 echo "cli"
-check "--list names every component" "8" "$(./install.sh --list | wc -l | tr -d ' ')"
+check "--list names every component" "9" "$(./install.sh --list | wc -l | tr -d ' ')"
 check "unknown component is rejected" "1" "$(./install.sh --only nope >/dev/null 2>&1; echo $?)"
 check "unknown option is rejected" "1" "$(./install.sh --frobnicate >/dev/null 2>&1; echo $?)"
 

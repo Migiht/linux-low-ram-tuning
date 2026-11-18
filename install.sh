@@ -11,8 +11,9 @@
 # Every component is idempotent; every file it rewrites is backed up once as <file>.bak-lowram.
 set -euo pipefail
 
-COMPONENTS=(zswap thp mglru earlyoom baloo kwin chrome mcp-lazy)
+COMPONENTS=(zswap thp mglru earlyoom baloo kwin chrome jetbrains mcp-lazy)
 ROOT_COMPONENTS=(zswap thp mglru earlyoom)
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 declare -A DESCRIPTION=(
   [zswap]="zswap (zstd, 25% pool, shrinker) in front of disk swap; zram off; swappiness 100"
   [thp]="transparent huge pages: madvise instead of always"
@@ -21,6 +22,7 @@ declare -A DESCRIPTION=(
   [baloo]="KDE: disable the Baloo file indexer"
   [kwin]="KDE: disable heavy KWin effects"
   [chrome]="Chrome/Chromium launcher with a renderer-process cap"
+  [jetbrains]="IntelliJ IDEA / RustRover: trim plugins; add Lite profiles (no AI completion, Grazie, MCP; 1.5 GB heap)"
   [mcp-lazy]="AI agents: build mcp-lazy and wrap user-scope stdio MCP servers in ~/.claude.json"
 )
 
@@ -33,6 +35,8 @@ MCP_LAZY_REPO=${MCP_LAZY_REPO:-https://github.com/Migiht/mcp-lazy}
 EARLYOOM_ARGS_DEFAULT="-m 5 -s 10 -r 3600 --prefer '(^|/)(firefox|chrome|chromium|electron|java|node|cc1plus|rustc|ld)\$' --avoid '(^|/)(init|systemd|systemd-.*|kwin_wayland|plasmashell|Xwayland|sddm|sddm-helper|pipewire|wireplumber|sshd|dbus-.*)\$'"
 EARLYOOM_ARGS=${EARLYOOM_ARGS:-$EARLYOOM_ARGS_DEFAULT}
 KWIN_EFFECTS=(blur fadingpopups frozenapp fullscreen maximize scale screenedge slide slidingnotifications slidingpopups squash windowaperture)
+JETBRAINS_TRIM_MAIN=${JETBRAINS_TRIM_MAIN:-1}   # 0: leave the normal IDE profiles alone, only add Lite ones
+JETBRAINS_ROOTS=${JETBRAINS_ROOTS:-}            # extra colon-separated directories to look for IDE installs in
 
 DRY=0
 PENDING_CMDLINE=()   # kernel parameters collected by components, applied once at the end
@@ -319,6 +323,135 @@ exec $real \\
   else
     warn "no system desktop file for $id found; start $wrapper directly"
   fi
+}
+
+# ───────────── JetBrains IDEs ─────────────
+
+# Plugin IDs from list files (comments and blank lines dropped).
+plugin_ids() { sed -e 's/#.*//' -e 's/[[:space:]\r]//g' "$@" | grep -v '^$' || true; }
+
+# merge_plugins <disabled_plugins.txt> <list files...>: add the listed IDs, keep whatever is there.
+merge_plugins() {
+  local target=$1; shift
+  local merged; merged=$( { cat "$target" 2>/dev/null || true; plugin_ids "$@"; } | grep -v '^$' | sort -u)
+  local before; before=$(sort -u "$target" 2>/dev/null | grep -v '^$' || true)
+  if [[ "$merged" == "$before" ]]; then same "$target: plugins already disabled"; return 0; fi
+  write_file user "$target" "$merged"
+}
+
+# build_vmoptions <ide's own .vmoptions> <overrides file>: the IDE defaults with our overrides applied.
+build_vmoptions() {
+  awk '
+    function key(l) {
+      if (l ~ /^-Xm[sx]/) return substr(l, 1, 4)
+      if (l ~ /^-XX:[+-]/) return "-XX:" substr(l, 6)
+      i = index(l, "="); return i ? substr(l, 1, i) : l
+    }
+    FNR == NR {                                   # overrides
+      if ($0 ~ /^#/ || $0 == "") next
+      if ($0 ~ /^!/) { drop[++nd] = substr($0, 2); next }
+      over[key($0)] = $0; order[++no] = key($0); next
+    }
+    /^#/ || $0 == "" { next }                     # IDE defaults
+    { for (d = 1; d <= nd; d++) if (index($0, drop[d]) == 1) next }
+    { k = key($0); if (k in over) { if (!(k in done)) { print over[k]; done[k] = 1 } ; next } print }
+    END { for (o = 1; o <= no; o++) if (!(order[o] in done)) print over[order[o]] }
+  ' "$2" "$1"
+}
+
+# find_ide_home <launcher> <dir globs...>: the first install directory that has bin/<launcher>.
+find_ide_home() {
+  local launcher=$1; shift
+  local pattern d
+  for pattern in "$@"; do
+    for d in $pattern; do
+      [[ -x "$d/bin/$launcher" || -x "$d/bin/$launcher.sh" ]] && { echo "$d"; return 0; }
+    done
+  done
+  return 1
+}
+
+# jetbrains_product <slug> <config prefix> <launcher> <env prefix> <plugin list> <WM class> <install globs...>
+jetbrains_product() {
+  local slug=$1 prefix=$2 launcher=$3 envp=$4 list=$5 wmclass=$6; shift 6
+  local -a globs=()
+  local r; IFS=: read -r -a extra <<<"$JETBRAINS_ROOTS"
+  for r in "${extra[@]}"; do [[ -n $r ]] && globs+=("$r"); done
+  globs+=("$@")
+  local home; home=$(find_ide_home "$launcher" "${globs[@]}") || return 0
+
+  # The newest normal (non-Lite) profile of this product.
+  local cfg
+  cfg=$(find "$HOME/.config/JetBrains" -maxdepth 1 -type d -name "$prefix[0-9]*" ! -name '*-lite' 2>/dev/null | sort -V | tail -1)
+  if [[ -z $cfg ]]; then warn "$slug is installed in $home but has no profile yet — start it once, then re-run"; return 0; fi
+  ok "$slug: $home, profile $(basename "$cfg")"
+
+  local running=0
+  if pgrep -u "$(id -u)" -f "$home/" >/dev/null 2>&1; then
+    running=1; warn "$slug is running — close it and re-run to change plugin lists (it rewrites them on exit)"
+  fi
+
+  if ((!running)) && [[ $JETBRAINS_TRIM_MAIN == 1 ]]; then
+    merge_plugins "$cfg/disabled_plugins.txt" "$HERE/jetbrains/$list"
+  fi
+
+  # Lite profile: a copy of the settings (license included) that then lives on its own.
+  local lite_cfg="$cfg-lite" base; base=$(basename "$cfg")
+  if [[ ! -d $lite_cfg ]]; then
+    run user cp -a "$cfg" "$lite_cfg"; ok "created Lite profile $(basename "$lite_cfg") from $base"; CHANGED=1
+  fi
+  ((running)) || merge_plugins "$lite_cfg/disabled_plugins.txt" "$HERE/jetbrains/$list" "$HERE/jetbrains/lite-extra.disabled-plugins.txt"
+
+  local dir="$HOME/.config/JetBrains/lite"
+  # shellcheck disable=SC2016  # ${user.home} is expanded by the IDE, not the shell
+  write_file user "$dir/$slug-lite.properties" "$(printf '%s\n' \
+    'idea.config.path=${user.home}/.config/JetBrains/'"$base"'-lite' \
+    'idea.system.path=${user.home}/.cache/JetBrains/'"$base"'-lite' \
+    'idea.plugins.path=${user.home}/.local/share/JetBrains/'"$base"'-lite' \
+    'idea.log.path=${user.home}/.cache/JetBrains/'"$base"'-lite/log' \
+    'shared.indexes.download=false' \
+    'ide.show.tips.on.startup.default.value=false')"
+
+  local vmfile; vmfile=$(find "$home/bin" -maxdepth 1 -name '*64.vmoptions' -print -quit)
+  if [[ -n $vmfile ]]; then
+    write_file user "$dir/$slug-lite.vmoptions" "$(build_vmoptions "$vmfile" "$HERE/jetbrains/lite.vmoptions-overrides")"
+  else
+    warn "no *64.vmoptions in $home/bin — Lite uses the IDE's default memory settings"
+  fi
+
+  local exe="$home/bin/$launcher"; [[ -x $exe ]] || exe="$exe.sh"
+  write_file user "$HOME/.local/bin/$slug-lite" "#!/bin/sh
+# $slug Lite: its own profile without AI completion, Grazie and MCP, 1.5 GB heap.
+export ${envp}_PROPERTIES=\"$dir/$slug-lite.properties\"
+export ${envp}_VM_OPTIONS=\"$dir/$slug-lite.vmoptions\"
+exec $exe \"\$@\""
+  run user chmod +x "$HOME/.local/bin/$slug-lite"
+
+  local icon="$home/bin/$launcher.svg"; [[ -f $icon ]] || icon="$home/bin/$launcher.png"
+  local title; title=$(sed -n '/"name"/{s/.*"name": *"\([^"]*\)".*/\1/p;q;}' "$home/product-info.json" 2>/dev/null || true)
+  write_file user "$HOME/.local/share/applications/jetbrains-$slug-lite.desktop" "[Desktop Entry]
+Type=Application
+Name=${title:-$slug} Lite
+Comment=$slug without AI completion, grammar checks and MCP; separate profile, 1.5 GB heap
+Exec=$HOME/.local/bin/$slug-lite %f
+Icon=$icon
+Terminal=false
+StartupWMClass=$wmclass
+Categories=Development;IDE;"
+}
+
+c_jetbrains() {
+  local before=$CHANGED found=0 tb="$HOME/.local/share/JetBrains/Toolbox/apps"
+  jetbrains_product idea IntelliJIdea idea IDEA idea.disabled-plugins.txt jetbrains-idea \
+    /opt/intellij-idea-ultimate-edition /opt/idea-IU-* /opt/intellij-idea-ultimate "$tb/intellij-idea-ultimate*" \
+    "$tb/IDEA-U/ch-0/*" /snap/intellij-idea-ultimate/current /usr/share/idea
+  jetbrains_product idea-ce IdeaIC idea IDEA idea.disabled-plugins.txt jetbrains-idea-ce \
+    /opt/intellij-idea-community-edition /opt/idea-IC-* "$tb/intellij-idea-community*" "$tb/IDEA-C/ch-0/*" \
+    /snap/intellij-idea-community/current /usr/share/idea-ce
+  jetbrains_product rustrover RustRover rustrover RUSTROVER rustrover.disabled-plugins.txt jetbrains-rustrover \
+    /opt/rustrover /opt/RustRover-* "$tb/rustrover*" "$tb/RustRover/ch-0/*" /snap/rustrover/current
+  for _ in "$HOME"/.local/bin/{idea,idea-ce,rustrover}-lite; do [[ -e $_ ]] && found=1; done
+  ((found || CHANGED != before)) || same "no IntelliJ IDEA or RustRover install found"
 }
 
 c_mcp-lazy() {
