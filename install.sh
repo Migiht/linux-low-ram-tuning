@@ -40,11 +40,12 @@ CHANGED=0
 
 # ───────────────────────────── output ─────────────────────────────
 
-if [[ -t 1 ]]; then B=$'\e[1m' G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' D=$'\e[2m' N=$'\e[0m'; else B= G= Y= R= D= N=; fi
+if [[ -t 1 ]]; then B=$'\e[1m' G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' D=$'\e[2m' N=$'\e[0m'; else B='' G='' Y='' R='' D='' N=''; fi
 section() { printf '\n%s== %s%s\n' "$B" "$1" "$N"; }
 ok()      { printf '  %s✓%s %s\n' "$G" "$N" "$*"; }
 same()    { printf '  %s· %s%s\n' "$D" "$*" "$N"; }
 warn()    { printf '  %s! %s%s\n' "$Y" "$*" "$N" >&2; }
+indent()  { local l; while IFS= read -r l; do printf '      %s\n' "$l"; done; }
 die()     { printf '%serror:%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
 
 # Run a command (prefixed with sudo when $1 is "root"), or just print it in dry-run mode.
@@ -69,8 +70,8 @@ write_file() {
   if ((DRY)); then
     local lines; lines=$(wc -l <<<"$content")
     printf '  %s[dry-run]%s write %s:\n' "$D" "$N" "$path"
-    if ((lines > 12)); then head -n 8 <<<"$content" | sed 's/^/      /'; printf '      … (%d lines)\n' "$lines"
-    else sed 's/^/      /' <<<"$content"; fi
+    if ((lines > 12)); then head -n 8 <<<"$content" | indent; printf '      … (%d lines)\n' "$lines"
+    else indent <<<"$content"; fi
     return 0
   fi
   if [[ -n "$current" && ! -e "$path.bak-lowram" ]]; then run "$who" cp -p "$path" "$path.bak-lowram"; fi
@@ -102,7 +103,7 @@ set_params() {
     key=${kv%%=*}; found=0
     for i in "${!words[@]}"; do
       if [[ ${words[$i]} == "$key" || ${words[$i]} == "$key="* ]]; then
-        if ((found)); then unset 'words[i]'; else words[$i]=$kv; found=1; fi
+        if ((found)); then unset 'words[i]'; else words[i]=$kv; found=1; fi
       fi
     done
     ((found)) || words+=("$kv")
@@ -207,9 +208,9 @@ w- /sys/module/zswap/parameters/enabled          - - - - Y"
     fi
   done
   local dev
-  for dev in $(awk 'NR>1 && $1 ~ /zram/ {print $1}' /proc/swaps); do
+  while read -r dev; do
     run root swapoff "$dev" && ok "swapped off $dev"
-  done
+  done < <(awk 'NR>1 && $1 ~ /zram/ {print $1}' /proc/swaps)
 
   sysfs_set /sys/module/zswap/parameters/compressor zstd
   sysfs_set /sys/module/zswap/parameters/max_pool_percent "$ZSWAP_POOL_PERCENT"

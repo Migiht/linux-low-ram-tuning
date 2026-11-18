@@ -2,8 +2,8 @@
 # Tests for install.sh that need no root and change nothing outside a temp dir.
 #   tests/run.sh
 set -uo pipefail
-cd "$(dirname "$0")/.."
-# shellcheck source=../install.sh
+cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=install.sh
 source ./install.sh
 
 pass=0 fail=0
