@@ -190,6 +190,10 @@ What does help:
   |---|---|
   | `-Xmx1024m` | ~2× the measured live data |
   | `-XX:G1PeriodicGCInterval=30000` | collect when idle and give the memory back |
+  | `-XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=30` | G1 shrinks the heap once >30 % is free instead of >70 % — a 60 %-free heap had been holding ~600 MB for nothing |
+  | `-XX:SoftMaxHeapSize=640m` | soft ceiling G1 aims for; it can still grow to `-Xmx`, so no OOM risk |
+  | `-Dfile-page-cache.cache-capacity-mb=100` | the "File cache" for index pages may grow to 600 MB by default ([PageCacheUtils.java](https://github.com/JetBrains/intellij-community/blob/master/platform/util/src/com/intellij/util/io/PageCacheUtils.java)) |
+  | `-XX:TrimNativeHeapInterval=60000` | once a minute, return glibc malloc's reserve to the OS |
   | `-XX:ParallelGCThreads=4 -XX:ConcGCThreads=1` | fewer GC threads (up to 10 by default) |
   | `-XX:ReservedCodeCacheSize=256m`, `-XX:SoftRefLRUPolicyMSPerMB=50` | half the JIT cache; caches let go sooner |
   | `-Dide.browser.jcef.enabled=false` | no embedded Chromium (~0.5 GB) |
@@ -197,10 +201,26 @@ What does help:
   | `-XX:TieredStopAtLevel=1` | C1-only JIT, less compiled-code memory |
   | `-Dvcs.log.index.enable=false` | the Git log index held ~380k commit objects |
 
+  Measured on RustRover Lite, idle after start: the heap-shrinking and cache lines alone took the
+  process's own memory from 1883 MB to ~1354 MB (RSS ~2.4 → ~1.9 GB); the heap now grows only when
+  needed and shrinks back.
   Trade-offs: C1-only JIT makes indexing and inspections slower (the first flag to drop if it feels
   sluggish); without JCEF the Markdown preview loses features and browser-based tool windows are blank;
   without the Git log index history search is slower; if the IDE warns about low memory, go back to
   `-Xmx1536m`.
+- **Fewer inspections on the fly** — out of the box RustRover runs 655 inspections in the editor, IDEA
+  1614. [These 24](jetbrains/inspections-off.txt) go off in *Settings for New Projects*
+  (`options/project.default.xml`) in every profile, so each project opened for the first time starts
+  without them: spelling, Grazie, text language detection, duplicated code, JSON/YAML schema checks,
+  SQL "no data source/dialect" (SQL highlighting stays), Markdown link/table checks, non-ASCII,
+  http-vs-https, unstable API, vulnerable libraries, commented-out code, Javadoc — and in RustRover the
+  **External Linter** (`cargo check`/`clippy` on the fly: four `rustc` processes, gigabytes, after every
+  start; the template also sets its `runOnTheFly` off) and "new crate version available". Kept on:
+  borrow and type checks, unused code, Java/Kotlin data-flow and nullability.
+  JetBrains has no truly global inspection setting — profiles live in each project's
+  `.idea/inspectionProfiles` — so the template only reaches projects opened for the first time; for an
+  existing one, switch them off once in Settings → Editor → Inspections (or copy a
+  `Project_Default.xml`). You can still run everything on demand: Code → Inspect Code.
 - **Habits:**
   - open one project at a time, not a folder of several — a three-project Cargo workspace meant name
     maps for 1942 crates (~8 s at every start, and most of the heap); one project is about a third;
@@ -294,7 +314,7 @@ power on a laptop. Worth it plugged in, if the laptop isn't already thermally th
 | `kwin` | `~/.config/kwinrc` `[Plugins]` | after `qdbus6 org.kde.KWin /KWin reconfigure` | yes |
 | `thorium` | AUR / GitHub release package; `Preferences` + `Local State` of every profile; default browser via `xdg-settings`/`xdg-mime`/`kdeglobals` | new Thorium launches; settings after it's closed | yes |
 | `chrome` | `~/.local/bin/google-chrome-lite`, `~/.local/share/applications/google-chrome-lite.desktop` | new Chrome launches | yes |
-| `jetbrains` | `disabled_plugins.txt` and `options/filetypes.xml` of the newest IDEA/RustRover profile; a `<profile>-lite` copy; `~/.config/JetBrains/lite/*-lite.{properties,vmoptions}`; `~/.local/bin/*-lite`; `jetbrains-*-lite.desktop` | next IDE start | yes |
+| `jetbrains` | `disabled_plugins.txt`, `options/filetypes.xml` and `options/project.default.xml` of the newest IDEA/RustRover profile; a `<profile>-lite` copy; `~/.config/JetBrains/lite/*-lite.{properties,vmoptions}`; `~/.local/bin/*-lite`; `jetbrains-*-lite.desktop` | next IDE start | yes |
 | `mcp-lazy` | `cargo install`, wraps user-scope stdio servers in `~/.claude.json` (backup kept) | new agent sessions | yes |
 
 Kernel command line: the script edits `/etc/kernel/cmdline` (UKI; regenerates with `mkinitcpio -P`),
@@ -336,6 +356,10 @@ systemctl is-active earlyoom                                              # acti
 - Phoronix, [EPP tuning on Meteor Lake](https://www.phoronix.com/review/intel-meteorlake-epp)
 - JetBrains JVM options: [FoxxMD/intellij-jvm-options-explained](https://github.com/FoxxMD/intellij-jvm-options-explained), [jordanmews/intellij_performance_settings](https://github.com/jordanmews/intellij_performance_settings), [lixiaoliyubo/jetbrains-vmoptions-config](https://github.com/lixiaoliyubo/jetbrains-vmoptions-config) (mostly pre-2021 — read with the caveats above)
 - JetBrains, [Advanced configuration: JVM options, platform properties, config directories](https://www.jetbrains.com/help/idea/tuning-the-ide.html)
+- JetBrains support, [The IDE uses more memory than -Xmx](https://intellij-support.jetbrains.com/hc/en-us/articles/360018776919)
+- JetBrains, [intellij-community `PageCacheUtils.java`](https://github.com/JetBrains/intellij-community/blob/master/platform/util/src/com/intellij/util/io/PageCacheUtils.java) (file page cache sizing)
+- Baeldung, [Reduce IntelliJ IDEA memory usage](https://www.baeldung.com/java-intellij-reduce-memory)
+- JetBrains, [RustRover performance tuning: filter the list of inspections](https://www.jetbrains.com/help/rust/code-inspection.html)
 - Phoronix, [CachyOS x86-64-v3/v4 repositories](https://www.phoronix.com/review/cachyos-x86-64-v3-v4)
 
 ## License

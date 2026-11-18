@@ -1,0 +1,37 @@
+# Inspections switched off in Settings for New Projects (options/project.default.xml) in every profile,
+# so every project opened for the first time starts without them. Format: <class> <level>.
+# Kept on deliberately: Rust borrow/type checks, unused code, Java/Kotlin data-flow and nullability —
+# real bugs are worth the CPU.
+#
+# Spelling, Grazie grammar/style, text language detection — parse every comment and string
+# Duplicated code — searches the whole project on the fly
+# JSON/YAML schema checks — download schemas and validate files against them
+# SQL "no data source" / "no dialect" — noise without a connected DB (// language=PostgreSQL still highlights)
+# Markdown broken links/tables, non-ASCII characters, http-instead-of-https — noise, worst on non-English text
+# Unstable API, vulnerable libraries (needs a plugin that's off), commented-out code, Javadoc — noise
+# Rust: External Linter (cargo check/clippy on the fly: 4 rustc processes, gigabytes, after every start)
+#       and "new crate version available" (polls the crates.io index)
+SpellCheckingInspection TYPO
+GrazieInspection GRAMMAR_ERROR
+GrazieStyle STYLE_SUGGESTION
+LanguageDetectionInspection WEAK WARNING
+DuplicatedCode WEAK WARNING
+JsonSchemaCompliance WARNING
+JsonSchemaDeprecation WEAK WARNING
+JsonSchemaRefReference WARNING
+YAMLSchemaValidation WARNING
+YAMLSchemaDeprecation WEAK WARNING
+NonAsciiCharacters WARNING
+HttpUrlsUsage WEAK WARNING
+SqlNoDataSourceInspection WARNING
+SqlDialectInspection WARNING
+MarkdownUnresolvedFileReference WARNING
+MarkdownUnresolvedHeaderReference WARNING
+MarkdownUnresolvedLinkLabel WARNING
+MarkdownIncorrectTableFormatting WEAK WARNING
+UnstableApiUsage WARNING
+VulnerableLibrariesLocal WARNING
+CommentedOutCode WEAK WARNING
+JavadocDeclaration WARNING
+RsExternalLinter ERROR
+NewCrateVersionAvailable WARNING

@@ -151,6 +151,43 @@ printf 'x\n' >"$main/disabled_plugins.txt"
 HOME="$jb" JETBRAINS_ROOTS="$ide" JETBRAINS_TRIM_MAIN=0 ./install.sh --only jetbrains >/dev/null 2>&1
 check "JETBRAINS_TRIM_MAIN=0 leaves the main profile alone" "x" "$(cat "$main/disabled_plugins.txt")"
 
+echo "jetbrains: inspections for new projects"
+ip="$tmp/insp"; mkdir -p "$ip/options"
+cat >"$ip/options/project.default.xml" <<'XML'
+<application>
+  <component name="ProjectManager">
+    <defaultProject>
+      <component name="PropertiesComponent"><![CDATA[{ "keyToString": { "a": "b" } }]]></component>
+      <component name="InspectionProjectProfileManager">
+        <profile version="1.0">
+          <option name="myName" value="Project Default" />
+          <inspection_tool class="DuplicatedCode" enabled="true" level="WEAK WARNING" enabled_by_default="true" />
+          <inspection_tool class="MyOwn" enabled="false" level="WARNING" enabled_by_default="false" />
+        </profile>
+      </component>
+      <component name="RsExternalLinterProjectSettings">
+        <option name="runOnTheFly" value="true" />
+      </component>
+    </defaultProject>
+  </component>
+</application>
+XML
+merge_inspections "$ip" 1 >/dev/null
+total=$(plugin_ids jetbrains/inspections-off.txt | wc -l)
+check "every listed inspection is off in the template" "$total" "$(grep -c 'enabled="false" level=' "$ip/options/project.default.xml" | awk -v own=1 '{print $1-own}')"
+check "an inspection that was on is switched off, not duplicated" "1" "$(grep -c 'class="DuplicatedCode"' "$ip/options/project.default.xml")"
+check "the user's own entries survive" "yes" "$(grep -q 'class="MyOwn"' "$ip/options/project.default.xml" && echo yes)"
+check "IDE-written CDATA is untouched" "yes" "$(grep -qF '<![CDATA[{ "keyToString": { "a": "b" } }]]>' "$ip/options/project.default.xml" && echo yes)"
+check "cargo check on the fly is off" "yes" "$(grep -q 'name="runOnTheFly" value="false"' "$ip/options/project.default.xml" && echo yes)"
+check "the result is well-formed XML" "ok" "$(python3 -I -c 'import sys,xml.dom.minidom as m; m.parse(sys.argv[1]); print("ok")' "$ip/options/project.default.xml" 2>&1)"
+before=$(cat "$ip/options/project.default.xml")
+check "second run reports nothing to do" "yes" "$(merge_inspections "$ip" 1 | grep -q 'already off' && echo yes)"
+check "second run changes nothing" "$before" "$(cat "$ip/options/project.default.xml")"
+ij="$tmp/insp-idea"; merge_inspections "$ij" 0 >/dev/null
+check "a missing template is created" "$total" "$(grep -c 'enabled="false" level=' "$ij/options/project.default.xml")"
+check "IDEA templates get no Cargo setting" "no" "$(grep -q runOnTheFly "$ij/options/project.default.xml" && echo yes || echo no)"
+check "a created template is well-formed" "ok" "$(python3 -I -c 'import sys,xml.dom.minidom as m; m.parse(sys.argv[1]); print("ok")' "$ij/options/project.default.xml" 2>&1)"
+
 echo "thorium: settings"
 th="$tmp/thorium"; mkdir -p "$th/Default" "$th/Profile 2"
 echo '{"browser":{"custom_chrome_frame":false,"show_home_button":true},"extensions":{"theme":{"system_theme":1,"id":"x"}}}' >"$th/Default/Preferences"

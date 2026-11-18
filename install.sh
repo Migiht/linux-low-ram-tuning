@@ -533,9 +533,82 @@ PY
   esac
 }
 
+# merge_inspections <profile dir> <rust 0|1>: switch off inspections-off.txt in the template for new
+# projects (options/project.default.xml); for RustRover also turn off cargo check on the fly.
+# Text-level edits on purpose: the file carries IDE-written CDATA a parser round-trip would mangle.
+merge_inspections() {
+  local file="$1/options/project.default.xml" report
+  report=$(DRY=$DRY FILE="$file" LIST="$HERE/jetbrains/inspections-off.txt" RUST="$2" python3 -I - <<'PY'
+import os, re, shutil
+path, dry, rust = os.environ["FILE"], os.environ["DRY"] == "1", os.environ["RUST"] == "1"
+wanted = []
+for line in open(os.environ["LIST"]):
+    line = line.strip()
+    if line and not line.startswith("#"):
+        cls, _, level = line.partition(" ")
+        wanted.append((cls, level.strip() or "WARNING"))
+text = open(path).read() if os.path.exists(path) else ""
+original = text
+if "<defaultProject>" not in text:
+    text = ('<application>\n  <component name="ProjectManager">\n    <defaultProject>\n'
+            '    </defaultProject>\n  </component>\n</application>\n')
+ind = "      "
+added = []
+if '<component name="InspectionProjectProfileManager">' not in text:
+    block = (f'{ind}<component name="InspectionProjectProfileManager">\n{ind}  <profile version="1.0">\n'
+             f'{ind}    <option name="myName" value="Project Default" />\n{ind}  </profile>\n{ind}</component>\n')
+    text = text.replace("    </defaultProject>", block + "    </defaultProject>", 1)
+start = text.index('<component name="InspectionProjectProfileManager">')
+end = text.index("</profile>", start)
+section = text[start:end]
+lines = ""
+for cls, level in wanted:
+    if f'class="{cls}"' in section:
+        # present: make sure it's off
+        section = re.sub(r'(<inspection_tool class="' + re.escape(cls) + r'"[^>]*?)enabled="true"', r'\1enabled="false"', section)
+        continue
+    lines += (f'{ind}    <inspection_tool class="{cls}" enabled="false" level="{level}" '
+              f'enabled_by_default="false" />\n')
+    added.append(cls)
+text = text[:start] + section + text[end:]          # end is the pre-edit position of </profile>
+end = text.index("</profile>", start)
+indent_end = text.rfind("\n", 0, end) + 1
+text = text[:indent_end] + lines + text[indent_end:]
+if rust:
+    if '<component name="RsExternalLinterProjectSettings">' not in text:
+        text = text.replace("    </defaultProject>",
+            f'{ind}<component name="RsExternalLinterProjectSettings">\n{ind}  <option name="runOnTheFly" value="false" />\n'
+            f'{ind}</component>\n    </defaultProject>', 1)
+        added.append("cargo-check-on-the-fly")
+    else:
+        new = re.sub(r'(<component name="RsExternalLinterProjectSettings">.*?<option name="runOnTheFly" value=")true(")',
+                     r'\1false\2', text, count=1, flags=re.S)
+        if new != text:
+            text = new; added.append("cargo-check-on-the-fly")
+if text == original:
+    print("same"); raise SystemExit
+if not dry:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path) and not os.path.exists(path + ".bak-lowram"):
+        shutil.copy2(path, path + ".bak-lowram")
+    with open(path, "w") as f:
+        f.write(text)
+print(f"changed {len(added)} " + " ".join(added))
+PY
+)
+  case $report in
+    same) same "$file: inspections already off for new projects";;
+    changed*) CHANGED=1; local n=${report#changed }; n=${n%% *}
+      if ((DRY)); then printf '  %s[dry-run]%s %s: switch off %s inspections for new projects\n' "$D" "$N" "$file" "$n"
+      else ok "$file: $n inspections off for new projects"; fi;;
+    *) warn "could not update $file: $report";;
+  esac
+}
+
 # jetbrains_product <slug> <config prefix> <launcher> <env prefix> <plugin list> <WM class> <install globs...>
 jetbrains_product() {
   local slug=$1 prefix=$2 launcher=$3 envp=$4 list=$5 wmclass=$6; shift 6
+  local rust=0; [[ $slug == rustrover ]] && rust=1
   local -a globs=()
   local r; IFS=: read -r -a extra <<<"$JETBRAINS_ROOTS"
   for r in "${extra[@]}"; do [[ -n $r ]] && globs+=("$r"); done
@@ -557,6 +630,7 @@ jetbrains_product() {
   if ((!running)) && [[ $JETBRAINS_TRIM_MAIN == 1 ]]; then
     merge_plugins "$cfg/disabled_plugins.txt" "$HERE/jetbrains/$list"
     merge_ignored "$cfg"
+    merge_inspections "$cfg" "$rust"
   fi
 
   # Lite profile: a copy of the settings (license included) that then lives on its own.
@@ -567,6 +641,7 @@ jetbrains_product() {
   if ((!running)); then
     merge_plugins "$lite_cfg/disabled_plugins.txt" "$HERE/jetbrains/$list" "$HERE/jetbrains/lite-extra.disabled-plugins.txt"
     merge_ignored "$lite_cfg"
+    merge_inspections "$lite_cfg" "$rust"
   fi
 
   local dir="$HOME/.config/JetBrains/lite"
