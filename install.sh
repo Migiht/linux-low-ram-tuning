@@ -382,7 +382,7 @@ jetbrains_product() {
 
   # The newest normal (non-Lite) profile of this product.
   local cfg
-  cfg=$(find "$HOME/.config/JetBrains" -maxdepth 1 -type d -name "$prefix[0-9]*" ! -name '*-lite' 2>/dev/null | sort -V | tail -1)
+  cfg=$(find "$HOME/.config/JetBrains" -maxdepth 1 -type d -name "${prefix}[0-9]*" ! -name '*-lite' 2>/dev/null | sort -V | tail -1)
   if [[ -z $cfg ]]; then warn "$slug is installed in $home but has no profile yet — start it once, then re-run"; return 0; fi
   ok "$slug: $home, profile $(basename "$cfg")"
 

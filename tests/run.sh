@@ -105,6 +105,7 @@ check "overrides replace in place, drop, flip flags and append" \
 echo "jetbrains: profiles"
 jb="$tmp/jb"; ide="$jb/opt/rustrover"
 mkdir -p "$ide/bin" "$jb/.config/JetBrains/RustRover2026.2"
+# shellcheck disable=SC2016  # the fake IDE expands these, not this script
 printf '#!/bin/sh\necho "props=$RUSTROVER_PROPERTIES vm=$RUSTROVER_VM_OPTIONS args=$*"\n' >"$ide/bin/rustrover"; chmod +x "$ide/bin/rustrover"
 cp "$tmp/base.vmoptions" "$ide/bin/rustrover64.vmoptions"
 echo '{ "name": "RustRover", "version": "2026.2" }' >"$ide/product-info.json"
@@ -127,7 +128,7 @@ check "desktop entry named after the product" "Name=RustRover Lite" \
 before=$(cat "$main/disabled_plugins.txt" "$lite/disabled_plugins.txt")
 HOME="$jb" JETBRAINS_ROOTS="$ide" ./install.sh --only jetbrains >"$tmp/jb2.out" 2>&1
 check "second run changes nothing" "$before" "$(cat "$main/disabled_plugins.txt" "$lite/disabled_plugins.txt")"
-check "second run says so" "yes" "$(grep -q 'already in place' "$tmp/jb2.out" && echo yes || cat "$tmp/jb2.out")"
+check "second run says so" "yes" "$(if grep -q 'already in place' "$tmp/jb2.out"; then echo yes; else cat "$tmp/jb2.out"; fi)"
 rm -rf "$lite"
 printf 'x\n' >"$main/disabled_plugins.txt"
 HOME="$jb" JETBRAINS_ROOTS="$ide" JETBRAINS_TRIM_MAIN=0 ./install.sh --only jetbrains >/dev/null 2>&1
