@@ -1,8 +1,7 @@
-# Plugins disabled in RustRover (main and Lite profiles): the JS/web stack, Qt/QML, extra colour schemes, Database, Qodana, CJK language packs and foreign keymaps. Git/GitHub/GitLab, Deployment, Dev Containers and Remote Development stay.
+# Plugins disabled in RustRover (main and Lite profiles): the JS/web stack, Qt/QML, extra colour schemes, Qodana, CJK language packs and foreign keymaps. Database Tools (SQL highlighting and `// language=PostgreSQL` injections need it), Git/GitHub/GitLab, Deployment, Dev Containers and Remote Development stay.
 # One plugin ID per line; lines starting with # are ignored. Unknown IDs are harmless.
 AngularJS
 com.intellij.css
-com.intellij.database
 com.intellij.ja
 com.intellij.ko
 com.intellij.lang.qml

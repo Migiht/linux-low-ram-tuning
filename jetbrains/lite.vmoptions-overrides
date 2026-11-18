@@ -1,10 +1,16 @@
 # Applied on top of the IDE's own bin/<ide>64.vmoptions to build a Lite profile's vmoptions.
 # "-Xkey" / "-XX:Key=" / "-Dkey=" lines replace the same option; "!<prefix>" removes lines starting with <prefix>.
 #
-# Heap: 1.5 GB. Watch the memory indicator (Appearance → Show memory indicator); if it sits above
-# ~85 % or the IDE warns about low memory, go back to -Xmx2048m (most likely on large Kotlin projects).
+# Heap: 1 GB. After a forced GC the live data of a 3-project Rust workspace was ~530 MB; the rest of a
+# 1.5 GB heap was garbage G1 was in no hurry to collect. If the IDE warns about low memory or stalls,
+# go back to -Xmx1536m (large Kotlin projects and several Cargo workspaces at once need it).
 -Xms128m
--Xmx1536m
+-Xmx1024m
+# When idle, collect every 30 s and hand freed memory back to the OS.
+-XX:G1PeriodicGCInterval=30000
+# Fewer GC worker threads (default up to 10 on 12 CPUs) — less native memory, slightly longer pauses.
+-XX:ParallelGCThreads=4
+-XX:ConcGCThreads=1
 # Half the JIT code cache, and soft references (caches) are let go sooner.
 -XX:ReservedCodeCacheSize=256m
 -XX:SoftRefLRUPolicyMSPerMB=50
@@ -16,6 +22,9 @@
 # C1-only JIT: less memory for compiled code, but indexing and inspections get slower. First thing to
 # remove if the IDE feels sluggish.
 -XX:TieredStopAtLevel=1
+# No Git log index: it held ~380k commit objects in the heap. Searching history in the Git tool window
+# gets slower.
+-Dvcs.log.index.enable=false
 # No AI promotion pop-ups, no AI licence flag.
 -Dllm.show.ai.promotion.window.on.start=false
 !-Denable.non.commercial.ai.license

@@ -32,7 +32,7 @@ and prints what it changed.
 | Killing idle agent sessions, unused DB services | ~0.8–0.9 GB each round; 750 MB ClickHouse + 2 GB Postgres that ran for nothing |
 | Baloo off, KWin effects off | no background indexer churn; fewer compositor wake-ups |
 | Chrome with a renderer limit | caps the process explosion of many tabs |
-| IntelliJ IDEA / RustRover: trimmed plugins + "Lite" profiles | 78 / 51 unused bundled plugins off; Lite: no AI completion, Grazie, MCP or embedded Chromium (~0.5 GB, 9 processes), 1.5 GB heap instead of 2–3 GB |
+| IntelliJ IDEA / RustRover: trimmed plugins + "Lite" profiles | 78 / 51 unused bundled plugins off; Lite: no AI completion, Grazie, MCP or embedded Chromium (~0.5 GB, 9 processes), 1 GB heap instead of 2–3 GB, periodic GC, capped malloc arenas |
 | earlyoom with prefer/avoid rules | the browser or a build dies before the desktop does |
 
 ---
@@ -139,8 +139,18 @@ use `-j4`…`-j6`. Same for Gradle/Kotlin daemons: `org.gradle.jvmargs=-Xmx2g`,
 **8. JetBrains IDEs: fewer plugins, and a "Lite" profile** (`jetbrains`)
 
 IntelliJ IDEA Ultimate ships with 162 bundled plugins enabled, RustRover with 113; a Java/Maven or
-Rust project needs a fraction. Measured on RustRover: the IDE process ~2.5 GB RSS, plus the embedded
-Chromium (JCEF) — 9 more processes, ~0.5 GB.
+Rust project needs a fraction. Measured on RustRover with a three-project Cargo workspace open: ~2.5–2.9
+GB RSS, plus the embedded Chromium (JCEF) — 9 more processes, ~0.5 GB. Broken down with `jcmd`:
+
+| Part | Size |
+|---|---|
+| Java heap | filled to whatever `-Xmx` allows; **~530 MB live** after a forced GC |
+| Class metadata (metaspace) | ~270 MB — the IDE's and plugins' code; settings barely move it |
+| Threads (~165–180), GC, malloc arenas, JIT code | ~300 MB |
+| Memory-mapped jars and `.so` | ~0.5 GB — counted in RSS, but the kernel drops these pages for free |
+
+So a real floor for a JVM IDE with Rust support is ~1 GB of its own memory; everything above that is
+heap the GC hasn't bothered to return, embedded Chromium, glibc slack, and how much code you open.
 
 What *doesn't* help much on 2026.x: classic vmoptions "tuning". Most guides
 ([FoxxMD/intellij-jvm-options-explained](https://github.com/FoxxMD/intellij-jvm-options-explained),
@@ -157,30 +167,55 @@ What does help:
 - **Disable unused bundled plugins** — `disabled_plugins.txt` in the IDE's config directory, edited
   while the IDE is closed. The lists in [`jetbrains/`](jetbrains/) drop Spring, Jakarta EE, Quarkus,
   Micronaut, Ktor, Kubernetes, the JS/CSS/web stack, Qodana, Trainer, CJK language packs, foreign
-  keymaps (and in RustRover Qt/QML, extra colour schemes and Database). They keep Kotlin, Gradle,
-  Maven, Docker, Git/GitHub/GitLab, Deployment, Dev Containers and Remote Development. **Read the list
-  before installing** — it's tuned for Java/Kotlin and Rust work.
+  keymaps (and in RustRover Qt/QML and extra colour schemes). They keep Kotlin, Gradle, Maven, Docker,
+  Database Tools (SQL highlighting and `// language=PostgreSQL` injections live there),
+  Git/GitHub/GitLab, Deployment, Dev Containers and Remote Development. **Read the list before
+  installing** — it's tuned for Java/Kotlin and Rust work.
+- **Globally ignored folders** — Settings → Editor → File Types → Ignored Files and Folders gets
+  [`node_modules`, `.next`, `.nuxt`, `.output`, `.turbo`, `.svelte-kit`, `.parcel-cache`, `.venv`](jetbrains/ignored-folders.txt)
+  in every profile, so no project indexes them (one workspace here had 25k files of `node_modules`
+  indexed as plain text). `target` stays visible on purpose: Rust needs the proc-macros and build-script
+  output in it, and both IDEs already exclude it for *attached* Cargo/Maven projects — so attach every
+  Cargo project in a workspace (a non-attached one put 11k `target/` files into the index).
 - **A "Lite" profile per IDE** — a launcher that points the IDE at its own config/system/plugins
-  directories (`IDEA_PROPERTIES` / `RUSTROVER_PROPERTIES`) and its own vmoptions
-  (`*_VM_OPTIONS`). The profile starts as a copy of your settings (licence included) and then lives on
-  its own; it has its own indexes, so the first project open re-indexes. On top of the plugin list it
-  disables local full-line AI completion (a separate process of a few hundred MB), ML ranking in
-  completion and Search Everywhere, Grazie, the MCP server, debugger MCP and the Agent Client Protocol,
-  and doesn't download shared indexes. Its vmoptions are the IDE's own with
-  [these overrides](jetbrains/lite.vmoptions-overrides): `-Xmx1536m`, a 256 MB code cache,
-  `-Dide.browser.jcef.enabled=false`, `-XX:+UseStringDeduplication`, `-XX:TieredStopAtLevel=1`,
-  `-XX:SoftRefLRUPolicyMSPerMB=50`, no AI promotion.
+  directories (`IDEA_PROPERTIES` / `RUSTROVER_PROPERTIES`) and its own vmoptions (`*_VM_OPTIONS`),
+  and sets `MALLOC_ARENA_MAX=2` (glibc otherwise keeps up to 8 arenas per core; with ~180 threads that
+  is 100–300 MB of slack). The profile starts as a copy of your settings (licence included) and then
+  lives on its own, with its own indexes. On top of the plugin list it disables local full-line AI
+  completion (a separate process of a few hundred MB), ML ranking in completion and Search Everywhere,
+  Grazie, the MCP server, debugger MCP and the Agent Client Protocol, and doesn't download shared
+  indexes. Its vmoptions are the IDE's own with [these overrides](jetbrains/lite.vmoptions-overrides):
+
+  | Option | Why |
+  |---|---|
+  | `-Xmx1024m` | ~2× the measured live data |
+  | `-XX:G1PeriodicGCInterval=30000` | collect when idle and give the memory back |
+  | `-XX:ParallelGCThreads=4 -XX:ConcGCThreads=1` | fewer GC threads (up to 10 by default) |
+  | `-XX:ReservedCodeCacheSize=256m`, `-XX:SoftRefLRUPolicyMSPerMB=50` | half the JIT cache; caches let go sooner |
+  | `-Dide.browser.jcef.enabled=false` | no embedded Chromium (~0.5 GB) |
+  | `-XX:+UseStringDeduplication` | identical strings stored once |
+  | `-XX:TieredStopAtLevel=1` | C1-only JIT, less compiled-code memory |
+  | `-Dvcs.log.index.enable=false` | the Git log index held ~380k commit objects |
+
   Trade-offs: C1-only JIT makes indexing and inspections slower (the first flag to drop if it feels
   sluggish); without JCEF the Markdown preview loses features and browser-based tool windows are blank;
-  watch the memory indicator and go back to `-Xmx2048m` if it sits above ~85 %.
-- **Habits:** one IDE open at a time (two JetBrains IDEs are 2–3 GB of heap each plus as much again
-  off-heap); exclude `target/`, asset and generated-doc directories from indexing; turn off inline AI
-  completion and AI Assistant in the normal profile if you don't use them; File → Power Save Mode when
-  you only read code.
+  without the Git log index history search is slower; if the IDE warns about low memory, go back to
+  `-Xmx1536m`.
+- **Habits:**
+  - open one project at a time, not a folder of several — a three-project Cargo workspace meant name
+    maps for 1942 crates (~8 s at every start, and most of the heap); one project is about a third;
+  - one IDE open at a time;
+  - "Preparing data for name resolution" at every RustRover start is normal — it's rebuilt in memory,
+    not re-indexing; "Analyzing project" re-indexes only when caches were wiped or build output changed;
+  - turning off proc-macro expansion or Cargo-check external linters saves memory and CPU but costs
+    completion for macro-generated code / on-the-fly errors — a conscious trade;
+  - IDE caches (`~/.cache/JetBrains`) grow to several GB per IDE; deleting them (IDE closed) frees disk,
+    not RAM, and costs a full re-index;
+  - File → Power Save Mode when you only read code.
 
 `JETBRAINS_TRIM_MAIN=0 ./install.sh --only jetbrains` adds the Lite profiles without touching the normal
-ones. Close the IDEs first — they rewrite `disabled_plugins.txt` on exit; the installer skips plugin
-lists of running IDEs.
+ones. Close the IDEs first — they rewrite `disabled_plugins.txt` and `filetypes.xml` on exit; the
+installer skips those for running IDEs.
 
 ### B — small but real
 
@@ -244,7 +279,7 @@ power on a laptop. Worth it plugged in, if the laptop isn't already thermally th
 | `baloo` | `balooctl6 disable`, masks `kde-baloo.service` (user) | yes | yes |
 | `kwin` | `~/.config/kwinrc` `[Plugins]` | after `qdbus6 org.kde.KWin /KWin reconfigure` | yes |
 | `chrome` | `~/.local/bin/google-chrome-lite`, `~/.local/share/applications/google-chrome-lite.desktop` | new Chrome launches | yes |
-| `jetbrains` | `disabled_plugins.txt` of the newest IDEA/RustRover profile; a `<profile>-lite` copy; `~/.config/JetBrains/lite/*-lite.{properties,vmoptions}`; `~/.local/bin/*-lite`; `jetbrains-*-lite.desktop` | next IDE start | yes |
+| `jetbrains` | `disabled_plugins.txt` and `options/filetypes.xml` of the newest IDEA/RustRover profile; a `<profile>-lite` copy; `~/.config/JetBrains/lite/*-lite.{properties,vmoptions}`; `~/.local/bin/*-lite`; `jetbrains-*-lite.desktop` | next IDE start | yes |
 | `mcp-lazy` | `cargo install`, wraps user-scope stdio servers in `~/.claude.json` (backup kept) | new agent sessions | yes |
 
 Kernel command line: the script edits `/etc/kernel/cmdline` (UKI; regenerates with `mkinitcpio -P`),

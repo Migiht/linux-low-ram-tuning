@@ -119,15 +119,32 @@ check "main profile keeps AI completion" "no" "$(grep -qx org.jetbrains.completi
 check "Lite profile is a copy (license included)" "license" "$(cat "$lite/rustrover.key" 2>/dev/null)"
 check "Lite disables AI completion, Grazie and MCP" "3" \
   "$(grep -cxE 'org.jetbrains.completion.full.line|tanvd.grazi|com.intellij.mcpServer' "$lite/disabled_plugins.txt")"
-check "Lite vmoptions built from the IDE's own" "-Xmx1536m" "$(grep -- -Xmx "$jb/.config/JetBrains/lite/rustrover-lite.vmoptions")"
+check "Lite vmoptions built from the IDE's own" "-Xmx1024m" "$(grep -- -Xmx "$jb/.config/JetBrains/lite/rustrover-lite.vmoptions")"
 check "launcher points the IDE at the Lite profile" \
   "props=$jb/.config/JetBrains/lite/rustrover-lite.properties vm=$jb/.config/JetBrains/lite/rustrover-lite.vmoptions args=proj" \
   "$("$jb/.local/bin/rustrover-lite" proj)"
+check "launcher caps glibc malloc arenas" "yes" "$(grep -q '^export MALLOC_ARENA_MAX=2$' "$jb/.local/bin/rustrover-lite" && echo yes)"
+check "a profile without filetypes.xml gets the default list plus ours" "yes" \
+  "$(grep -q 'ignoreFiles list="\*.pyc;.*;\.git;.*node_modules;.*\.venv;"' "$main/options/filetypes.xml" && echo yes || cat "$main/options/filetypes.xml")"
+check "Lite profile ignores the folders too" "yes" "$(grep -q 'node_modules' "$lite/options/filetypes.xml" && echo yes)"
 check "desktop entry named after the product" "Name=RustRover Lite" \
   "$(grep '^Name=' "$jb/.local/share/applications/jetbrains-rustrover-lite.desktop")"
-before=$(cat "$main/disabled_plugins.txt" "$lite/disabled_plugins.txt")
+# An IDE-written list with entries of its own: ours are appended, theirs kept, other XML untouched.
+cat >"$lite/options/filetypes.xml" <<'XML'
+<application>
+  <component name="FileTypeManager" version="19">
+    <ignoreFiles list="*.pyc;.git;.ruff_cache;node_modules" />
+    <extensionMap><mapping ext="x" type="PLAIN_TEXT" /></extensionMap>
+  </component>
+</application>
+XML
+HOME="$jb" JETBRAINS_ROOTS="$ide" ./install.sh --only jetbrains >/dev/null 2>&1
+check "merges into an existing list without duplicates" "*.pyc;.git;.ruff_cache;node_modules;.output;.nuxt;.next;.turbo;.svelte-kit;.parcel-cache;.venv;" \
+  "$(sed -n 's/.*ignoreFiles list="\([^"]*\)".*/\1/p' "$lite/options/filetypes.xml")"
+check "keeps the rest of filetypes.xml" "yes" "$(grep -q 'mapping ext="x"' "$lite/options/filetypes.xml" && echo yes)"
+before=$(cat "$main/disabled_plugins.txt" "$lite/disabled_plugins.txt" "$main/options/filetypes.xml" "$lite/options/filetypes.xml")
 HOME="$jb" JETBRAINS_ROOTS="$ide" ./install.sh --only jetbrains >"$tmp/jb2.out" 2>&1
-check "second run changes nothing" "$before" "$(cat "$main/disabled_plugins.txt" "$lite/disabled_plugins.txt")"
+check "second run changes nothing" "$before" "$(cat "$main/disabled_plugins.txt" "$lite/disabled_plugins.txt" "$main/options/filetypes.xml" "$lite/options/filetypes.xml")"
 check "second run says so" "yes" "$(if grep -q 'already in place' "$tmp/jb2.out"; then echo yes; else cat "$tmp/jb2.out"; fi)"
 rm -rf "$lite"
 printf 'x\n' >"$main/disabled_plugins.txt"

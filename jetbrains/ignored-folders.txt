@@ -1,0 +1,13 @@
+# Added to Settings → Editor → File Types → Ignored Files and Folders in every profile: the IDE then
+# never sees these directories — not in the tree, search or index — in any project.
+# `target` is deliberately absent: Rust takes proc-macros and build-script output from it, Maven puts
+# generated sources there, and both IDEs already exclude it for imported Cargo/Maven projects.
+# If you re-enable the JS plugins, drop node_modules from here.
+node_modules
+.output
+.nuxt
+.next
+.turbo
+.svelte-kit
+.parcel-cache
+.venv

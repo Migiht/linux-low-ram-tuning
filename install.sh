@@ -22,7 +22,7 @@ declare -A DESCRIPTION=(
   [baloo]="KDE: disable the Baloo file indexer"
   [kwin]="KDE: disable heavy KWin effects"
   [chrome]="Chrome/Chromium launcher with a renderer-process cap"
-  [jetbrains]="IntelliJ IDEA / RustRover: trim plugins; add Lite profiles (no AI completion, Grazie, MCP; 1.5 GB heap)"
+  [jetbrains]="IntelliJ IDEA / RustRover: trim plugins; add Lite profiles (no AI completion, Grazie, MCP; 1 GB heap)"
   [mcp-lazy]="AI agents: build mcp-lazy and wrap user-scope stdio MCP servers in ~/.claude.json"
 )
 
@@ -371,6 +371,48 @@ find_ide_home() {
   return 1
 }
 
+# merge_ignored <profile dir>: add ignored-folders.txt to the profile's global "Ignored Files and
+# Folders" list (options/filetypes.xml), keeping the IDE's own entries.
+merge_ignored() {
+  local file="$1/options/filetypes.xml" report
+  report=$(DRY=$DRY FILE="$file" LIST="$HERE/jetbrains/ignored-folders.txt" python3 -I - <<'PY'
+import os, re, shutil
+path, dry = os.environ["FILE"], os.environ["DRY"] == "1"
+wanted = [l.strip() for l in open(os.environ["LIST"]) if l.strip() and not l.lstrip().startswith("#")]
+# The platform's default list, used when the profile has never customised it.
+default = "*.pyc;*.pyo;*.rbc;*.yarb;*~;.DS_Store;.git;.hg;.svn;CVS;__pycache__;_svn;vssver.scc;vssver2.scc;"
+text = open(path).read() if os.path.exists(path) else ""
+m = re.search(r'<ignoreFiles list="([^"]*)"', text)
+current = m.group(1) if m else default
+entries = [e for e in current.split(";") if e]
+missing = [w for w in wanted if w not in entries]
+if not missing:
+    print("same"); raise SystemExit
+new_list = ";".join(entries + missing) + ";"
+if m:
+    text = text[:m.start(1)] + new_list + text[m.end(1):]
+elif "<component name=\"FileTypeManager\"" in text:
+    text = re.sub(r'(<component name="FileTypeManager"[^>]*>)', r'\1\n    <ignoreFiles list="' + new_list + '" />', text, count=1)
+else:
+    text = ('<application>\n  <component name="FileTypeManager" version="18">\n'
+            f'    <ignoreFiles list="{new_list}" />\n  </component>\n</application>\n')
+if not dry:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path) and not os.path.exists(path + ".bak-lowram"):
+        shutil.copy2(path, path + ".bak-lowram")
+    with open(path, "w") as f:
+        f.write(text)
+print("added " + " ".join(missing))
+PY
+)
+  case $report in
+    same) same "$file: folders already ignored";;
+    added*) CHANGED=1; if ((DRY)); then printf '  %s[dry-run]%s %s: ignore %s\n' "$D" "$N" "$file" "${report#added }"
+            else ok "$file: now ignores ${report#added }"; fi;;
+    *) warn "could not update $file: $report";;
+  esac
+}
+
 # jetbrains_product <slug> <config prefix> <launcher> <env prefix> <plugin list> <WM class> <install globs...>
 jetbrains_product() {
   local slug=$1 prefix=$2 launcher=$3 envp=$4 list=$5 wmclass=$6; shift 6
@@ -386,6 +428,7 @@ jetbrains_product() {
   if [[ -z $cfg ]]; then warn "$slug is installed in $home but has no profile yet — start it once, then re-run"; return 0; fi
   ok "$slug: $home, profile $(basename "$cfg")"
 
+  have python3 || { warn "python3 is needed for the JetBrains component — skipped"; return 0; }
   local running=0
   if pgrep -u "$(id -u)" -f "$home/" >/dev/null 2>&1; then
     running=1; warn "$slug is running — close it and re-run to change plugin lists (it rewrites them on exit)"
@@ -393,6 +436,7 @@ jetbrains_product() {
 
   if ((!running)) && [[ $JETBRAINS_TRIM_MAIN == 1 ]]; then
     merge_plugins "$cfg/disabled_plugins.txt" "$HERE/jetbrains/$list"
+    merge_ignored "$cfg"
   fi
 
   # Lite profile: a copy of the settings (license included) that then lives on its own.
@@ -400,7 +444,10 @@ jetbrains_product() {
   if [[ ! -d $lite_cfg ]]; then
     run user cp -a "$cfg" "$lite_cfg"; ok "created Lite profile $(basename "$lite_cfg") from $base"; CHANGED=1
   fi
-  ((running)) || merge_plugins "$lite_cfg/disabled_plugins.txt" "$HERE/jetbrains/$list" "$HERE/jetbrains/lite-extra.disabled-plugins.txt"
+  if ((!running)); then
+    merge_plugins "$lite_cfg/disabled_plugins.txt" "$HERE/jetbrains/$list" "$HERE/jetbrains/lite-extra.disabled-plugins.txt"
+    merge_ignored "$lite_cfg"
+  fi
 
   local dir="$HOME/.config/JetBrains/lite"
   # shellcheck disable=SC2016  # ${user.home} is expanded by the IDE, not the shell
@@ -421,9 +468,11 @@ jetbrains_product() {
 
   local exe="$home/bin/$launcher"; [[ -x $exe ]] || exe="$exe.sh"
   write_file user "$HOME/.local/bin/$slug-lite" "#!/bin/sh
-# $slug Lite: its own profile without AI completion, Grazie and MCP, 1.5 GB heap.
+# $slug Lite: its own profile without AI completion, Grazie and MCP, 1 GB heap.
 export ${envp}_PROPERTIES=\"$dir/$slug-lite.properties\"
 export ${envp}_VM_OPTIONS=\"$dir/$slug-lite.vmoptions\"
+# glibc keeps up to 8 malloc arenas per core; with ~180 JVM threads that is 100-300 MB of slack.
+export MALLOC_ARENA_MAX=2
 exec $exe \"\$@\""
   run user chmod +x "$HOME/.local/bin/$slug-lite"
 
@@ -432,7 +481,7 @@ exec $exe \"\$@\""
   write_file user "$HOME/.local/share/applications/jetbrains-$slug-lite.desktop" "[Desktop Entry]
 Type=Application
 Name=${title:-$slug} Lite
-Comment=$slug without AI completion, grammar checks and MCP; separate profile, 1.5 GB heap
+Comment=$slug without AI completion, grammar checks and MCP; separate profile, 1 GB heap
 Exec=$HOME/.local/bin/$slug-lite %f
 Icon=$icon
 Terminal=false
