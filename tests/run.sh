@@ -125,7 +125,7 @@ check "launcher points the IDE at the Lite profile" \
   "$("$jb/.local/bin/rustrover-lite" proj)"
 check "launcher caps glibc malloc arenas" "yes" "$(grep -q '^export MALLOC_ARENA_MAX=2$' "$jb/.local/bin/rustrover-lite" && echo yes)"
 check "a profile without filetypes.xml gets the default list plus ours" "yes" \
-  "$(grep -q 'ignoreFiles list="\*.pyc;.*;\.git;.*node_modules;.*\.venv;"' "$main/options/filetypes.xml" && echo yes || cat "$main/options/filetypes.xml")"
+  "$(if grep -q 'ignoreFiles list="\*.pyc;.*;\.git;.*node_modules;.*\.venv;"' "$main/options/filetypes.xml"; then echo yes; else cat "$main/options/filetypes.xml"; fi)"
 check "Lite profile ignores the folders too" "yes" "$(grep -q 'node_modules' "$lite/options/filetypes.xml" && echo yes)"
 check "desktop entry named after the product" "Name=RustRover Lite" \
   "$(grep '^Name=' "$jb/.local/share/applications/jetbrains-rustrover-lite.desktop")"
