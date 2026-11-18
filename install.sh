@@ -11,7 +11,7 @@
 # Every component is idempotent; every file it rewrites is backed up once as <file>.bak-lowram.
 set -euo pipefail
 
-COMPONENTS=(zswap thp mglru earlyoom baloo kwin chrome jetbrains mcp-lazy)
+COMPONENTS=(zswap thp mglru earlyoom baloo kwin thorium chrome jetbrains mcp-lazy)
 ROOT_COMPONENTS=(zswap thp mglru earlyoom)
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 declare -A DESCRIPTION=(
@@ -21,7 +21,8 @@ declare -A DESCRIPTION=(
   [earlyoom]="earlyoom with prefer (browsers, JVM, compilers) / avoid (desktop, audio) rules"
   [baloo]="KDE: disable the Baloo file indexer"
   [kwin]="KDE: disable heavy KWin effects"
-  [chrome]="Chrome/Chromium launcher with a renderer-process cap"
+  [thorium]="Thorium browser as the default: installed, renderer cap, custom (non-system) window frame + Thorium 2024 UI"
+  [chrome]="Chrome/Chromium launcher with a renderer-process cap (skipped when Thorium is set up)"
   [jetbrains]="IntelliJ IDEA / RustRover: trim plugins; add Lite profiles (no AI completion, Grazie, MCP; 1 GB heap)"
   [mcp-lazy]="AI agents: build mcp-lazy and wrap user-scope stdio MCP servers in ~/.claude.json"
 )
@@ -35,10 +36,12 @@ MCP_LAZY_REPO=${MCP_LAZY_REPO:-https://github.com/Migiht/mcp-lazy}
 EARLYOOM_ARGS_DEFAULT="-m 5 -s 10 -r 3600 --prefer '(^|/)(firefox|chrome|chromium|electron|java|node|cc1plus|rustc|ld)\$' --avoid '(^|/)(init|systemd|systemd-.*|kwin_wayland|plasmashell|Xwayland|sddm|sddm-helper|pipewire|wireplumber|sshd|dbus-.*)\$'"
 EARLYOOM_ARGS=${EARLYOOM_ARGS:-$EARLYOOM_ARGS_DEFAULT}
 KWIN_EFFECTS=(blur fadingpopups frozenapp fullscreen maximize scale screenedge slide slidingnotifications slidingpopups squash windowaperture)
+THORIUM_DEFAULT_BROWSER=${THORIUM_DEFAULT_BROWSER:-1}   # 0: install and tune Thorium, keep the current default browser
 JETBRAINS_TRIM_MAIN=${JETBRAINS_TRIM_MAIN:-1}   # 0: leave the normal IDE profiles alone, only add Lite ones
 JETBRAINS_ROOTS=${JETBRAINS_ROOTS:-}            # extra colon-separated directories to look for IDE installs in
 
 DRY=0
+SELECTED=()
 PENDING_CMDLINE=()   # kernel parameters collected by components, applied once at the end
 CHANGED=0
 
@@ -283,7 +286,150 @@ c_kwin() {
   else same "KWin effects already off"; fi
 }
 
+# Flags every Chromium-based browser here starts with: tabs share renderer processes instead of one
+# each, and each renderer's JS heap is capped.
+browser_flags() {
+  printf '%s\n' "--renderer-process-limit=$CHROME_RENDERER_LIMIT" "--js-flags=--max-old-space-size=256" "--disable-smooth-scrolling"
+}
+
+# Thorium's settings: the browser draws its own title bar (not the window manager's), classic theme
+# (not GTK/Qt), and the "Thorium 2024" UI flag. Applied to every existing profile, or seeded for the
+# first run. The browser must be closed — it rewrites these files on exit.
+thorium_prefs() {
+  local dir=$1 report
+  report=$(DRY=$DRY DIR="$dir" python3 -I - <<'PY'
+import json, os, glob, shutil
+root, dry = os.environ["DIR"], os.environ["DRY"] == "1"
+changed = []
+def edit(path, fn, label):
+    try:
+        data = json.load(open(path)) if os.path.exists(path) else {}
+    except ValueError:
+        print(f"skip {label}: unreadable"); return
+    before = json.dumps(data, sort_keys=True)
+    fn(data)
+    if json.dumps(data, sort_keys=True) == before:
+        return
+    changed.append(label)
+    if dry:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path) and not os.path.exists(path + ".bak-lowram"):
+        shutil.copy2(path, path + ".bak-lowram")
+    tmp = path + ".tmp-lowram"
+    with open(tmp, "w") as f:
+        json.dump(data, f, separators=(",", ":"))
+    os.replace(tmp, path)
+
+def prefs(d):
+    d.setdefault("browser", {})["custom_chrome_frame"] = True          # no system title bar
+    d.setdefault("extensions", {}).setdefault("theme", {})["system_theme"] = 0   # classic, not GTK/Qt
+def local_state(d):
+    labs = d.setdefault("browser", {}).setdefault("enabled_labs_experiments", [])
+    labs[:] = [f for f in labs if not f.startswith("thorium-2024@")] + ["thorium-2024@2"]
+
+profiles = [p for p in glob.glob(os.path.join(root, "Default")) + glob.glob(os.path.join(root, "Profile *"))]
+if not profiles:
+    profiles = [os.path.join(root, "Default")]          # first run: seed the default profile
+for p in profiles:
+    edit(os.path.join(p, "Preferences"), prefs, os.path.basename(p))
+edit(os.path.join(root, "Local State"), local_state, "Local State")
+print("changed " + ", ".join(changed) if changed else "same")
+PY
+)
+  case $report in
+    same) same "Thorium: custom frame, classic theme and Thorium 2024 UI already set";;
+    changed*) CHANGED=1; if ((DRY)); then printf '  %s[dry-run]%s Thorium settings: %s\n' "$D" "$N" "${report#changed }"
+              else ok "Thorium settings set in: ${report#changed }"; fi;;
+    *) warn "Thorium settings: $report";;
+  esac
+}
+
+thorium_install() {
+  have thorium-browser && return 0
+  if have pacman; then
+    local aur=""; have paru && aur=paru; [[ -z $aur ]] && have yay && aur=yay
+    if [[ -n $aur ]]; then run user "$aur" -S --needed --noconfirm thorium-browser-bin; return 0; fi
+    warn "Thorium is in the AUR (thorium-browser-bin); install an AUR helper (paru/yay) or build it, then re-run"
+    return 1
+  fi
+  local fmt=""; have apt-get && fmt=deb; [[ -z $fmt ]] && { have dnf || have zypper; } && fmt=rpm
+  [[ -n $fmt ]] || { warn "install Thorium from https://github.com/Alex313031/thorium/releases, then re-run"; return 1; }
+  # Builds are per instruction set; pick the best this CPU runs.
+  local isa=SSE3; grep -qw avx /proc/cpuinfo && isa=AVX; grep -qw avx2 /proc/cpuinfo && isa=AVX2
+  local url
+  url=$(curl -fsSL https://api.github.com/repos/Alex313031/thorium/releases/latest \
+        | grep -o "\"browser_download_url\": *\"[^\"]*_${isa}\.${fmt}\"" | sed 's/.*"\(http[^"]*\)"/\1/' | sed -n 1p || true)
+  [[ -n $url ]] || { warn "no Thorium $isa .$fmt in the latest release — install it by hand, then re-run"; return 1; }
+  if ((DRY)); then run root "install $url"; return 0; fi
+  local pkg; pkg=$(mktemp -d)/thorium.$fmt
+  curl -fL --progress-bar -o "$pkg" "$url" || { warn "download failed: $url"; return 1; }
+  case $fmt in
+    deb) run root apt-get install -y "$pkg";;
+    rpm) if have dnf; then run root dnf install -y "$pkg"; else run root zypper --non-interactive install "$pkg"; fi;;
+  esac
+  CHANGED=1
+}
+
+thorium_default_browser() {
+  local id=$1 current
+  current=$(xdg-settings get default-web-browser 2>/dev/null || true)
+  if [[ $current == "$id" ]]; then same "default browser is already $id"; return 0; fi
+  run user xdg-settings set default-web-browser "$id" 2>/dev/null || true
+  local mime
+  for mime in text/html application/xhtml+xml x-scheme-handler/http x-scheme-handler/https x-scheme-handler/about x-scheme-handler/unknown; do
+    run user xdg-mime default "$id" "$mime" 2>/dev/null || true  # xdg-utils on KDE complains about qtpaths; harmless
+  done
+  # Plasma also keeps its own "web browser" setting.
+  have kwriteconfig6 && run user kwriteconfig6 --file kdeglobals --group General --key BrowserApplication "$id"
+  CHANGED=1; ((DRY)) || ok "default browser: $id (was ${current:-unset})"
+}
+
+c_thorium() {
+  thorium_install || return 0
+  ((DRY)) && ! have thorium-browser && { same "(dry run: the rest needs Thorium installed)"; return 0; }
+  local bin; bin=$(command -v thorium-browser)
+
+  # Flags: the Arch package's launcher reads ~/.config/thorium-flags.conf; elsewhere a user-level copy
+  # of the desktop entry carries them (same file name, so it replaces the system one in menus and as
+  # the default-browser handler).
+  if grep -qs 'flags.conf' "$bin"; then
+    local name; name=$(sed -n 's/^name=//p' "$bin"); name=${name:-thorium}
+    write_file user "${XDG_CONFIG_HOME:-$HOME/.config}/$name-flags.conf" "# Renderer cap for low-RAM machines (written by linux-low-ram-tuning)
+$(browser_flags)"
+  else
+    local src=/usr/share/applications/thorium-browser.desktop
+    if [[ -f $src ]]; then
+      local flags; flags=$(browser_flags | tr '\n' ' ')
+      write_file user "$HOME/.local/share/applications/thorium-browser.desktop" \
+        "$(F="$flags" awk '/^Exec=/ { sub(/^Exec=[^ ]+/, "& " ENVIRON["F"]); sub(/  +/, " ") } { print }' "$src")"
+    else
+      warn "no thorium-browser.desktop found; start Thorium with: $(browser_flags | tr '\n' ' ')"
+    fi
+  fi
+
+  local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/thorium"
+  if pgrep -u "$(id -u)" -x thorium >/dev/null 2>&1 || pgrep -u "$(id -u)" -f '/thorium-browser/thorium( |$)' >/dev/null 2>&1; then
+    warn "Thorium is running — close it and re-run to apply the window-frame/UI settings (it rewrites them on exit)"
+  else
+    thorium_prefs "$cfg"
+  fi
+
+  if [[ $THORIUM_DEFAULT_BROWSER == 1 ]]; then
+    # The packages' entry is thorium-browser.desktop; fall back to any entry that launches Thorium.
+    local id=thorium-browser.desktop other
+    if [[ ! -f /usr/share/applications/$id && ! -f $HOME/.local/share/applications/$id ]]; then
+      other=$(grep -ls 'Exec=.*thorium-browser' /usr/share/applications/*.desktop 2>/dev/null | sed -n 1p || true)
+      [[ -n $other ]] && id=$(basename "$other")
+    fi
+    thorium_default_browser "$id"
+  fi
+}
+
 c_chrome() {
+  if [[ " ${SELECTED[*]} " == *" thorium "* ]] && have thorium-browser; then
+    same "Thorium is the browser here — Chrome launcher skipped"; return 0
+  fi
   local bin="" id=""
   for bin in google-chrome-stable chromium thorium-browser brave-browser; do
     if have "$bin"; then id=$bin; break; fi
@@ -579,6 +725,7 @@ main() {
   done
   [[ -n $only ]] && for c in ${only//,/ }; do [[ -n ${DESCRIPTION[$c]:-} ]] || die "unknown component: $c"; done
   ((${#selected[@]})) || die "nothing selected"
+  SELECTED=("${selected[@]}")
 
   ((DRY)) && printf '%sDry run — nothing will be changed.%s\n' "$B" "$N"
   local needs_root=0

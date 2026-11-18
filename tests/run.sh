@@ -151,8 +151,45 @@ printf 'x\n' >"$main/disabled_plugins.txt"
 HOME="$jb" JETBRAINS_ROOTS="$ide" JETBRAINS_TRIM_MAIN=0 ./install.sh --only jetbrains >/dev/null 2>&1
 check "JETBRAINS_TRIM_MAIN=0 leaves the main profile alone" "x" "$(cat "$main/disabled_plugins.txt")"
 
+echo "thorium: settings"
+th="$tmp/thorium"; mkdir -p "$th/Default" "$th/Profile 2"
+echo '{"browser":{"custom_chrome_frame":false,"show_home_button":true},"extensions":{"theme":{"system_theme":1,"id":"x"}}}' >"$th/Default/Preferences"
+echo '{"profile":{"name":"Work"}}' >"$th/Profile 2/Preferences"
+echo '{"browser":{"enabled_labs_experiments":["foo@1","thorium-2024@1"]},"other":1}' >"$th/Local State"
+thorium_prefs "$th" >/dev/null
+pj() { python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(eval(sys.argv[2])))" "$1" "$2"; }
+check "every profile gets the browser-drawn frame" "true true" \
+  "$(pj "$th/Default/Preferences" 'd["browser"]["custom_chrome_frame"]') $(pj "$th/Profile 2/Preferences" 'd["browser"]["custom_chrome_frame"]')"
+check "classic theme instead of GTK/Qt" "0" "$(pj "$th/Default/Preferences" 'd["extensions"]["theme"]["system_theme"]')"
+check "other preferences are kept" "true \"x\" \"Work\"" \
+  "$(pj "$th/Default/Preferences" 'd["browser"]["show_home_button"]') $(pj "$th/Default/Preferences" 'd["extensions"]["theme"]["id"]') $(pj "$th/Profile 2/Preferences" 'd["profile"]["name"]')"
+check "Thorium 2024 UI flag replaces an older value, other flags kept" '["foo@1", "thorium-2024@2"]' \
+  "$(pj "$th/Local State" 'd["browser"]["enabled_labs_experiments"]')"
+check "originals backed up" "yes" "$([[ -e $th/Default/Preferences.bak-lowram ]] && echo yes)"
+before=$(cat "$th/Default/Preferences" "$th/Local State")
+check "second run reports nothing to do" "yes" "$(thorium_prefs "$th" | grep -q 'already set' && echo yes)"
+check "second run changes nothing" "$before" "$(cat "$th/Default/Preferences" "$th/Local State")"
+fresh="$tmp/thorium-fresh"; thorium_prefs "$fresh" >/dev/null
+check "first run is seeded before Thorium ever started" "true" "$(pj "$fresh/Default/Preferences" 'd["browser"]["custom_chrome_frame"]')"
+
+echo "thorium: flags and default browser"
+tb="$tmp/thbin"; mkdir -p "$tb" "$tmp/thhome"
+printf '#!/bin/sh\nname=thorium\nflags_file="$HOME/.config/${name}-flags.conf"\n' >"$tb/thorium-browser"
+for stub in xdg-settings xdg-mime kwriteconfig6; do
+  printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n[ "$1" = get ] && echo old-browser.desktop\nexit 0\n' "$stub" "$tmp" >"$tb/$stub"
+done
+chmod +x "$tb"/*
+HOME="$tmp/thhome" XDG_CONFIG_HOME="$tmp/thhome/.config" PATH="$tb:$PATH" ./install.sh --only thorium >"$tmp/th.out" 2>&1
+check "flags go to the launcher's flags file" "--renderer-process-limit=6" "$(grep -- '--renderer' "$tmp/thhome/.config/thorium-flags.conf")"
+check "sets the default web browser" "yes" "$(grep -q 'xdg-settings set default-web-browser thorium-browser.desktop' "$tmp/calls" && echo yes)"
+check "registers http/https handlers" "2" "$(grep -cE 'xdg-mime default thorium-browser.desktop x-scheme-handler/https?$' "$tmp/calls")"
+check "sets Plasma's browser too" "yes" "$(grep -q 'kwriteconfig6 --file kdeglobals --group General --key BrowserApplication thorium-browser.desktop' "$tmp/calls" && echo yes)"
+rm -f "$tmp/calls"
+HOME="$tmp/thhome" XDG_CONFIG_HOME="$tmp/thhome/.config" PATH="$tb:$PATH" THORIUM_DEFAULT_BROWSER=0 ./install.sh --only thorium >/dev/null 2>&1
+check "THORIUM_DEFAULT_BROWSER=0 leaves the default alone" "no" "$(grep -q default-web-browser "$tmp/calls" 2>/dev/null && echo yes || echo no)"
+
 echo "cli"
-check "--list names every component" "9" "$(./install.sh --list | wc -l | tr -d ' ')"
+check "--list names every component" "10" "$(./install.sh --list | wc -l | tr -d ' ')"
 check "unknown component is rejected" "1" "$(./install.sh --only nope >/dev/null 2>&1; echo $?)"
 check "unknown option is rejected" "1" "$(./install.sh --frobnicate >/dev/null 2>&1; echo $?)"
 
