@@ -174,8 +174,10 @@ check "first run is seeded before Thorium ever started" "true" "$(pj "$fresh/Def
 
 echo "thorium: flags and default browser"
 tb="$tmp/thbin"; mkdir -p "$tb" "$tmp/thhome"
+# shellcheck disable=SC2016  # the stub scripts expand these, not this one
 printf '#!/bin/sh\nname=thorium\nflags_file="$HOME/.config/${name}-flags.conf"\n' >"$tb/thorium-browser"
 for stub in xdg-settings xdg-mime kwriteconfig6; do
+  # shellcheck disable=SC2016
   printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n[ "$1" = get ] && echo old-browser.desktop\nexit 0\n' "$stub" "$tmp" >"$tb/$stub"
 done
 chmod +x "$tb"/*
